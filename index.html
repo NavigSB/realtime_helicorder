@@ -1,32 +1,51 @@
 <!DOCTYPE html>
 <html lang="en">
- <head>
-  <meta charset="utf-8"/>
+
+<head>
+  <meta charset="utf-8" />
   <title>
-   Realtime Helicorder Test (UW 2022)
+    Realtime Helicorder Test (UW 2023)
   </title>
-  <link href="stylez.css" rel="stylesheet"/>
+  <link href="stylez.css" rel="stylesheet" />
 
- </head>
+</head>
 
-  <body>
-    <h3>Realtime Helicorder</h3>
-    <h3>Realtime display for <span id="channel"></span></h3>
+<body>
+  <h2>Realtime Helicorder</h2>
+  <h3>Realtime display for <span id="channel"></span></h3>
+  <div style="display: flex; flex-direction: column; row-gap: 0.2em; margin-top: 1.5em; margin-bottom: 1.5em;">
     <div>
+      Start:
       <span id="starttime"></span>
+    </div>
+    <div>
+      End:
       <span id="endtime"></span>
+    </div>
+    <div>
+      Current:
       <span id="currentTime"></span>
     </div>
+    <div style="margin-top: 0.25em; margin-bottom: 0.25em">
+      <button id="disconnect">Disconnect</button>
+      <button id="pause">Pause</button>
+    </div>
+    <div>
+      <span>Scale:</span>
+      <input type="range" name="scale-slider" id="scale-slider" value="0" disabled>
+      <span id="scale-val">60 mins</span>
+    </div>
+  </div>
 
-    <button id="disconnect">Disconnect</button>
-    <button id="pause">Pause</button>
+  <div style="margin-bottom: 0.5em">
     Packets: <span id="numPackets">0</span>
-    <div id="realtime">
-    </div>
+  </div>
+  <div id="realtime-placeholder" style="font-size: 1.5em">
+    <strong>Loading...</strong>
+  </div>
+  <div id="realtime" style="visibility: hidden;"></div>
 
-    <div id="debug">
-    </div>
-    <script src="./realtime_helicorder.mjs" type="module"></script>
-  </body>
+  <script src="./realtime_helicorder.mjs" type="module"></script>
+</body>
 
 </html>
