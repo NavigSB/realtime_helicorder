@@ -48,8 +48,8 @@ let streamStart;
 
 main();
 
-// Main method, which creates the helicorder on the html of the page and makes
-//   the interface interactive.
+// Main method, which creates the entire helicorder on the page and 
+//   interactive interface.
 function main() {
 	const timeWindow = getTimeWindow(PLOT_TIME_MAX);
 	const datalink = getDataConnection();
@@ -57,8 +57,9 @@ function main() {
 	setupUI(datalink, timeWindow);
 }
 
-// Creates a DataLinkConnection to the DATA_LINK_URL, sending all packets to
-//   the packetHandler function and prints errors to the console and page.
+// Returns a new DataLinkConnection to the DATA_LINK_URL, configuring 
+//   packets to go to the packetHandler function and all errors to the 
+//   console & page.
 function getDataConnection() {
 	return new seisplotjs.datalink.DataLinkConnection(
 		DATA_LINK_URL,
@@ -70,8 +71,9 @@ function getDataConnection() {
 	);
 }
 
-// Processes packets and adds the new data to the helicorder
+// Processes packets and adds the new data to the helicorder.
 function packetHandler(packet) {
+	// Make sure packet is miniseed for correct conversion to segment
 	if (packet.isMiniseed()) {
 		numPackets++;
 		d3.select("span#numPackets").text(numPackets);
@@ -83,12 +85,14 @@ function packetHandler(packet) {
 			helicorder.appendSegment(seisSegment);
 		}
 
+		// Add a marker that indicates where "now" is on the plot
 		let nowMarker = {
 			markertype: "predicted",
 			name: "now",
 			time: DateTime.utc(),
 		};
-		// Marker that indicates the current time should move along instead of redraw
+		// Remove all other markers to make sure past "now" marker doesn't
+		//   stick around
 		helicorder.seisData[0].markerList = [];
 		helicorder.seisData[0].addMarker(nowMarker);
 	} else {
@@ -96,19 +100,23 @@ function packetHandler(packet) {
 	}
 }
 
-// Queries past data based on the station configs, placing a new helicorder
-//   on the page, given the DataLinkConnection object and a luxon time window
+// Queries past data based on the station configs, instantiating and placing a
+//   new helicorder on the page, given the DataLinkConnection object and a
+//   luxon time window for the helicorder time range.
 function setupHelicorder(datalink, timeWindow) {
+	// Create new config object and add global custom options to it
 	let fullConfig = new seisplotjs.helicorder.HelicorderConfig(timeWindow);
 	Object.assign(fullConfig, HELI_CONFIG);
 	
 	const query = new seisplotjs.fdsndataselect.DataSelectQuery();
+	// Set query parameters of query to the global info about desired data
 	query
 		.networkCode(NET_CODE)
 		.stationCode(STA_CODE)
 		.locationCode(LOC_CODE)
 		.channelCode(CHAN_CODE)
 		.timeWindow(timeWindow);
+	// Initiate query and pass info to createHelicorder method
 	query
 		.querySeismograms()
 		.then(seismograms => createHelicorder(seismograms, datalink, fullConfig))
@@ -117,32 +125,38 @@ function setupHelicorder(datalink, timeWindow) {
 		});
 }
 
-// Creates a helicorder and adds it to the page, given a seismogram data array,
-//   the DataLinkConnection object, and a config object for the helicorder.
+// Creates a helicorder and adds it to the page, given a seismogram data array
+//   from past data, the DataLinkConnection object, and a config object for the
+//   helicorder.
 async function createHelicorder(seismograms, datalink, config) {
-	const lastPacket = seismograms[0];
+	// Since we only have one query, the first seismogram is the only one
+	const seismogram = seismograms[0];
 	let seisData = seisplotjs.seismogram.SeismogramDisplayData.fromSeismogram(
-		lastPacket
+		seismogram
 	);
-	streamStart = lastPacket.endTime;
-	// create helicorder
+	streamStart = seismogram.endTime;
+
+	// create helicorder and add to the page
 	helicorder = new seisplotjs.helicorder.Helicorder(seisData, config);
-	// add to page
 	document.querySelector("div#realtime").append(helicorder);
+
+	// Wait for the current helicorder drawing to finish
 	await waitUntilHelicorderIsStatic();
 	rendered = true;
-	// draw seismogram
+
+	// now redraw the helicorder at the proper global starting time scale
 	updateHelicorderScale(PLOT_TIME_START);
-	// start live data connection
+
+	// start live data connection and enable interface
 	await toggleConnect(datalink);
 	document.querySelector("#realtime-placeholder").style.visibility = "hidden";
 	document.querySelector("#realtime").style.visibility = "visible";
 	document.querySelector("#scale-slider").removeAttribute("disabled");
 }
 
-// Initializes the headers, the clock, and buttons, given the
-//   DataLinkConnection object and luxon time window for the header info
-//   and for button interactivity.
+// Initializes headers, the clock, and inputs, given the
+//   DataLinkConnection object and helicorder's luxon time window in order to
+//   set the header info and enable button interactivity.
 function setupUI(datalink, timeWindow) {
 	setHeader(timeWindow);
 	startClock();
@@ -150,11 +164,7 @@ function setupUI(datalink, timeWindow) {
 
 	d3.select("button#pause").on("click", function (d) {
 		paused = !paused;
-		if (paused) {
-			d3.select("button#pause").text("Play");
-		} else {
-			d3.select("button#pause").text("Pause");
-		}
+		d3.select("button#pause").text(paused ? "Play" : "Pause");
 	});
 
 	d3.select("button#disconnect").on("click", function (d) {
@@ -165,16 +175,14 @@ function setupUI(datalink, timeWindow) {
 // Set the time frame, current time, and site info titles based on global
 //   variables and the luxon time window for the helicorder.
 function setHeader(timeWindow) {
-	document.querySelector("span#starttime").textContent =
-		timeWindow.start.toISO(LUX_CONFIG);
-	document.querySelector("span#endtime").textContent =
-		timeWindow.end.toISO(LUX_CONFIG);
+	document.querySelector("span#starttime").textContent = timeWindow.start.toISO(LUX_CONFIG);
+	document.querySelector("span#endtime").textContent = timeWindow.end.toISO(LUX_CONFIG);
 	d3
 		.select("span#channel")
 		.text(`${NET_CODE}.${STA_CODE}.${LOC_CODE}.${CHAN_CODE}`);
 }
 
-// Begin interval of updating current time title each second
+// Begin interval of updating current time title each second.
 function startClock() {
 	const currentTimeDiv = document.querySelector("span#currentTime");
 	setInterval(() => {
@@ -182,16 +190,22 @@ function startClock() {
 	}, 1000);
 }
 
-// Changes slider label on each change and redraws the helicorder when
-//   the input is released
+// Sets up events to change time scale range input label upon each input change 
+//   and to redraw the helicorder at the new scale when the input is released.
 function setupScaleSlider() {
 	const scaleInput = document.querySelector("#scale-slider");
+	// Initialize scaleInput at PLOT_TIME_START by mapping it onto a scale from
+	//   zero to one
 	scaleInput.value = (PLOT_TIME_START - PLOT_TIME_MIN) / (PLOT_TIME_MAX - PLOT_TIME_MIN);
 	if (scaleInput.value < 0 || scaleInput.value > 1) {
 		console.error("Scale range configuration is invalid!");
+		return;
 	}
-	let currScale = updateScaleLabel(scaleInput.value);
 
+	// When the range input moves at all, the oninput event sets the currScale
+	//   variable, and then the moment that the input sets a new value
+	//   (on release), the helicorder is redrawn at the new scale.
+	let currScale = updateScaleLabel(scaleInput.value);
 	scaleInput.oninput = () => {
 		currScale = updateScaleLabel(scaleInput.value)
 	};
@@ -200,51 +214,29 @@ function setupScaleSlider() {
 	};
 }
 
+// Updates the slider label to the given value (0-1) based on the global 
+//   allowed time scale range of the helicorder. For example, if the min time
+//   scale is 10 minutes and the max is 20, a value of 0.5 would update the 
+//   label to indicate 15 minutes as the time scale. The function also returns
+//   the calculated scale number.
 function updateScaleLabel(value) {
 	const scaleLabel = document.querySelector("#scale-val");
+	// Only set first word of label so that the units label or other parts
+	//   can be customized in the HTML
 	let labelParts = scaleLabel.innerText.split(" ");
-	let labelValue = Math.round((value / 100) 
+	let labelValue = Math.round((value / 100)
 						* (PLOT_TIME_MAX - PLOT_TIME_MIN) + PLOT_TIME_MIN);
 	labelParts[0] = labelValue;
 	scaleLabel.innerText = labelParts.join(" ");
+
 	return labelValue;
 }
 
-async function updateHelicorderScale(scale) {
-	if(rendered) {
-		rendered = false;
-		document.querySelector("#scale-slider").setAttribute("disabled", "");
 
-		helicorder.heliConfig.fixedTimeScale = getTimeWindow(scale);
-		helicorder.draw();
-		await waitUntilHelicorderIsStatic();
-
-		rendered = true;
-		document.querySelector("#scale-slider").removeAttribute("disabled");
-	}
-}
-
-function waitUntilHelicorderIsStatic() {
-	return new Promise(resolve => {
-		const helicorderObserver = new MutationObserver(() => {
-			helicorderObserver.disconnect();
--			resolve();
-		});
-		const wrapperElement = Array.from(document.querySelector("sp-helicorder").shadowRoot
-			.querySelectorAll("sp-seismograph"))
-			.slice(-1)[0].shadowRoot;
-		helicorderObserver.observe(wrapperElement, {
-			childList: true,
-			subtree: true
-		});
-	});
-}
-
-// Creates a luxon time window from the current time to the future end point of
+// Returns a luxon time window from the current time to the future end point of
 //   the plot, based on plotTimeScale, the amount of minutes of data to display,
 //   for use in a helicorder object.
 function getTimeWindow(plotTimeScale) {
-	// plot start would be changeable when looking at past data
 	const plotStart = DateTime.utc()
 		.endOf("hour")
 		.plus({ milliseconds: 1 }); // make sure it includes whole hour
@@ -255,51 +247,89 @@ function getTimeWindow(plotTimeScale) {
 	let duration = Duration.fromDurationLike({
 		minute: plotTimeScale,
 	});
-
-	// Time window for plot, from plotStart to plotStart + duration
+	
+	// Time window for plot, from plotStart to plotStart + plotTimeScale
 	return Interval.before(plotStart, duration);
 }
 
+// Returns a promise that resolves once the helicorder has finished
+//   updating/drawing.
+function waitUntilHelicorderIsStatic() {
+	return new Promise(resolve => {
+		// Create MutationObserver to subscribe to changes in helicorder HTML
+		const helicorderObserver = new MutationObserver(() => {
+			// When any change is detected, resolve. This works because
+			//   mutations in the helicorder are done sequentially, so once the
+			//   element is done mutating, only then are mutation events sent
+			//   to this callback.
+			helicorderObserver.disconnect();
+			resolve();
+		});
+		// Subscribe to changes in the last helicorder row so that once
+		//   mutations have finished on the last row, all rows are done.
+		const wrapperElement = Array.from(document.querySelector("sp-helicorder").shadowRoot
+			.querySelectorAll("sp-seismograph"))
+			.slice(-1)[0].shadowRoot;
+		// Observe childList to see when any elements have been added to last
+		//   row, as well as subtree for any changes to descendents.
+		helicorderObserver.observe(wrapperElement, {
+			childList: true,
+			subtree: true
+		});
+	});
+}
+
+// Redraws the helicorder at the given scale (in minutes) and deactivates the 
+//   scale range input until the drawing finishes.
+async function updateHelicorderScale(scale) {
+	// Ensure updates only happen one at a time, for added robustness
+	if(rendered) {
+		rendered = false;
+		document.querySelector("#scale-slider").setAttribute("disabled", "");
+		
+		// Reset time scale as new luxon time window, redraw helicorder, and
+		//   wait for updates to finish.
+		helicorder.heliConfig.fixedTimeScale = getTimeWindow(scale);
+		helicorder.draw();
+		await waitUntilHelicorderIsStatic();
+		
+		rendered = true;
+		document.querySelector("#scale-slider").removeAttribute("disabled");
+	}
+}
+
 // Toggle whether given DataLinkConnection object is connected to stream or not,
-//   also updating button text
+//   also updating associated button text
 async function toggleConnect(datalink) {
 	stopped = !stopped;
-	if (stopped) {
-		if (datalink) {
+	if (datalink) {
+		// If newly disconnected, remove current connections. Otherwise, 
+		//   re-establish connection.
+		if (stopped) {
 			datalink.endStream();
 			datalink.close();
-		}
-		d3.select("button#disconnect").text("Reconnect");
-	} else {
-		d3.select("button#disconnect").text("Disconnect");
-		if (datalink) {
-			await startDataStream(datalink)
+		} else {
+			await startDataStream(datalink);
 		}
 	}
+	d3.select("button#disconnect").text(stopped ? "Reconnect" : "Disconnect");
 }
 
 // Connects and starts the stream for the given DataLinkConnection object
 async function startDataStream(datalink) {
-	try {
-		let serverId = await datalink.connect();
-		console.log(`id response: ${serverId}`);
+	// Connect datalink to the already-configured url
+	let serverId = await datalink.connect();
+	console.log(`id response: ${serverId}`);
 
-		let response = await datalink.match(matchPattern);
-		console.log(`match response: ${response}`);
+	// Link datalink to correct source with global pattern
+	let response = await datalink.match(matchPattern);
+	console.log(`match response: ${response}`);
 
-		if(numPackets > 0)
-			return datalink.positionAfter(streamStart);
-	} catch (error) {
-		htmlLogError(error);
-		console.error(error);
+	// If packets already received from source, adjust datalink position to 
+	//   current data
+	if(numPackets > 0) {
+		return datalink.positionAfter(streamStart);
 	}
-	return datalink.stream();
-}
 
-// Adds an error message to the html of the page
-function htmlLogError(msg) {
-	d3
-		.select("div#debug")
-		.append("p")
-		.html("Error: " + msg);
+	datalink.stream();
 }
