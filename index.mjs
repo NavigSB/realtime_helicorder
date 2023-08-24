@@ -1,8 +1,8 @@
 import { Helicorder } from "./helicorder.mjs"
+import { HelicorderScaler } from "./hscaler_plugin.mjs";
 
 const PLOT_TIME_MIN = 60;
 const PLOT_TIME_MAX = 60 * 24;
-const PLOT_TIME_START = 60;
 const LUX_CONFIG = {
     suppressMilliseconds: true,
 	suppressSeconds: true
@@ -16,7 +16,7 @@ async function main() {
     helicorder = new Helicorder("UW", "JCW", "", "EHZ", {
         showNowMarker: true
     });
-    helicorder.onUpdate(() => {
+    helicorder.addListener("init", () => {
         if (!fullyLoaded) {
             setupUI(helicorder);
             fullyLoaded = true;
@@ -32,28 +32,18 @@ async function main() {
 function setupUI(helicorder) {
     document.querySelector("#realtime-placeholder").style.visibility = "hidden";
 	document.querySelector("#realtime").style.visibility = "visible";
-	document.querySelector("#scale-slider").removeAttribute("disabled");
 
 	setHeader(helicorder, helicorder.timeWindow);
 	startClock();
-	setupScaleSlider(helicorder);
+
+	const hScaler = new HelicorderScaler(helicorder, PLOT_TIME_MIN, PLOT_TIME_MAX, 0);
+	hScaler.addInputToElement("#scale-slider-container");
+	hScaler.addLabelToElement("#scale-slider-container");
 
 	document.querySelector("button#pause").addEventListener("click", () => {
 		paused = !paused;
-		d3.select("button#pause").text(paused ? "Play" : "Pause");
-        d3.select("button#disconnect").text(paused ? "Reconnect" : "Disconnect");
+		document.querySelector("button#pause").innerHTML = paused ? "Play" : "Pause";
         if (paused) {
-            helicorder.stop();
-        } else {
-            helicorder.start();
-        }
-	});
-
-	document.querySelector("button#disconnect").addEventListener("click", () => {
-        paused = !paused;
-        d3.select("button#pause").text(paused ? "Play" : "Pause");
-        d3.select("button#disconnect").text(paused ? "Reconnect" : "Disconnect");
-		if (paused) {
             helicorder.stop();
         } else {
             helicorder.start();
@@ -75,48 +65,6 @@ function startClock() {
 	setInterval(() => {
 		currentTimeDiv.textContent = new Date().toISOString();
 	}, 1000);
-}
-
-// Sets up events to change time scale range input label upon each input change 
-//   and to redraw the helicorder at the new scale when the input is released.
-function setupScaleSlider(helicorder) {
-	const scaleInput = document.querySelector("#scale-slider");
-	// Initialize scaleInput at PLOT_TIME_START by mapping it onto a scale from
-	//   zero to one
-	scaleInput.value = (PLOT_TIME_START - PLOT_TIME_MIN) / (PLOT_TIME_MAX - PLOT_TIME_MIN);
-	if (scaleInput.value < 0 || scaleInput.value > 1) {
-		console.error("Scale range configuration is invalid!");
-		return;
-	}
-
-	// When the range input moves at all, the oninput event sets the currScale
-	//   variable, and then the moment that the input sets a new value
-	//   (on release), the helicorder is redrawn at the new scale.
-	let currScale = updateScaleLabel(scaleInput.value);
-	scaleInput.oninput = () => {
-		currScale = updateScaleLabel(scaleInput.value)
-	};
-	scaleInput.onchange = () => {
-		helicorder.setScale(currScale);
-	};
-}
-
-// Updates the slider label to the given value (0-1) based on the global 
-//   allowed time scale range of the helicorder. For example, if the min time
-//   scale is 10 minutes and the max is 20, a value of 0.5 would update the 
-//   label to indicate 15 minutes as the time scale. The function also returns
-//   the calculated scale number.
-function updateScaleLabel(value) {
-	const scaleLabel = document.querySelector("#scale-val");
-	// Only set first word of label so that the units label or other parts
-	//   can be customized in the HTML
-	let labelParts = scaleLabel.innerText.split(" ");
-	let labelValue = Math.round((value / 100)
-						* (PLOT_TIME_MAX - PLOT_TIME_MIN) + PLOT_TIME_MIN);
-	labelParts[0] = labelValue;
-	scaleLabel.innerText = labelParts.join(" ");
-
-	return labelValue;
 }
 
 main();
