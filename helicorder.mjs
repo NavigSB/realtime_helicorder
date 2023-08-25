@@ -47,6 +47,7 @@ export class Helicorder {
 			title: `Helicorder for ${this.matchPattern}`,
 			...(customHeliConfig ? customHeliConfig : {})
 		};
+		this._lastEnd;
 		this._callbacks = {};
 		this._currCallbackId = 0;
 		this._callbackLock = false;
@@ -87,6 +88,7 @@ export class Helicorder {
 		if (this.connected) {
 			this._datalink.endStream();
 			this._datalink.close();
+			this._lastEnd = DateTime.utc().toSeconds();
 			this.connected = false;
 		}
 	}
@@ -144,19 +146,30 @@ async function initGraph(helicorder) {
 
 	if (!helicorder.initialized) {
 		helicorder._graph = await setupGraph(helicorder, timeWindow);
-	}
-
-	// Create observer that monitors the states of the graph and fires events
-	//   to the callback.
-	helicorder._observer = createGraphObserver(helicorder._graph, event => {
-		// Each time an event is fired, see if event type exists in _callbacks.
-		//   If it does, dispatch all callbacks connected to that type.s
-		if (event in helicorder._callbacks) {
-			for (const index in helicorder._callbacks[event]) {
-				helicorder._callbacks[event][index]();
+		// Create observer that monitors the states of the graph and fires events
+		//   to the callback.
+		helicorder._observer = createGraphObserver(helicorder._graph, event => {
+			// Each time an event is fired, see if event type exists in _callbacks.
+			//   If it does, dispatch all callbacks connected to that type.s
+			if (event in helicorder._callbacks) {
+				for (const index in helicorder._callbacks[event]) {
+					helicorder._callbacks[event][index]();
+				}
+			}
+		});
+	} else {
+		if (!helicorder._lastEnd) console.error("_lastEnd should be defined when resuming stream!");
+		let pausedDuration = (DateTime.utc().toSeconds() - helicorder._lastEnd) / 60;
+		let pausedTimeWindow = getTimeWindow(pausedDuration);
+		let pausedSeismogram = await getSeismogramFromTimeWindow(helicorder, pausedTimeWindow);
+		// If not defined, no content was returned from url
+		if (pausedSeismogram) {
+			for (let i = 0; i < pausedSeismogram.segments; i++) {
+				let segment = pausedSeismogram.segments[i];
+				helicorder._graph.appendSegment(segment);
 			}
 		}
-	});
+	}
 
 	if (!helicorder.initialized) {
 		helicorder.initialized = true;
@@ -171,6 +184,16 @@ async function setupGraph(helicorder, timeWindow) {
 	let fullConfig = new seisplotjs.helicorder.HelicorderConfig(timeWindow);
 	Object.assign(fullConfig, helicorder._graphConfig);
 
+	let seismogram = await getSeismogramFromTimeWindow(helicorder, timeWindow);
+	let seisData = seisplotjs.seismogram.SeismogramDisplayData.fromSeismogram(
+		seismogram
+	);
+
+	// create graph from returned data
+	return new seisplotjs.helicorder.Helicorder(seisData, fullConfig);
+}
+
+async function getSeismogramFromTimeWindow(helicorder, timeWindow) {
 	const query = new seisplotjs.fdsndataselect.DataSelectQuery();
 	// Set query parameters to match the helicorder parameters
 	query
@@ -182,14 +205,7 @@ async function setupGraph(helicorder, timeWindow) {
 
 	let seismograms = await query.querySeismograms();
 	// Since we only have one query, the first seismogram is the only one
-	const seismogram = seismograms[0];
-	let seisData = seisplotjs.seismogram.SeismogramDisplayData.fromSeismogram(
-		seismogram
-	);
-	helicorder._streamStart = seismogram.endTime;
-
-	// create graph from returned data
-	return new seisplotjs.helicorder.Helicorder(seisData, fullConfig);
+	return seismograms[0];
 }
 
 // Creates a graph observer that watches for changes in the given graphElement,
@@ -251,23 +267,23 @@ function setupObserverCallbacks(graphElement, callback) {
 	};
 }
 
-// Returns a luxon time window from the current time to the future end point of
-//   the plot, based on plotTimeScale, the amount of minutes of data to display,
-//   for use in a graph object.
+// Returns a luxon time window from plotTimeScale minutes before now 
+//   to the current time, for use in a graph object.
 function getTimeWindow(plotTimeScale) {
-	const plotStart = DateTime.utc()
+	// Time window end is the current time
+	const plotEnd = DateTime.utc()
 		.endOf("hour")
 		.plus({ milliseconds: 1 }); // make sure it includes whole hour
 	// Keep each line's hour to an even value
-	if (plotStart.hour % 2 === 1) {
-		plotStart.plus({ hours: 1 });
+	if (plotEnd.hour % 2 === 1) {
+		plotEnd.plus({ hours: 1 });
 	}
 	let duration = Duration.fromDurationLike({
 		minute: plotTimeScale,
 	});
 	
-	// Time window for plot, from plotStart to plotStart + plotTimeScale
-	return Interval.before(plotStart, duration);
+	// Time window for plot, from plotEnd - plotTimeScale to plotEnd
+	return Interval.before(plotEnd, duration);
 }
 
 // Processes packets and adds the new data to the graph.
