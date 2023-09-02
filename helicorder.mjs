@@ -2,13 +2,12 @@
 import * as seisplotjs from "./seisplotjs_3.0.0-alpha.1_standalone.mjs";
 const { DateTime, Duration, Interval } = seisplotjs.luxon;
 
-
 const HELI_CONFIG = {
 	wheelZoom: false,
 	isYAxisNice: false,
   	doGain: true,
   	centeredAmp: false,
-  	fixedAmplitudeScale: [-2500, 0],
+	fixedAmplitudeScale: [-2500, 0],
 	numLines: 12
 }; // Helicorder configuration - can be overridden and added to with customHeliConfig
 
@@ -52,6 +51,7 @@ export class Helicorder {
 		this._currCallbackId = 0;
 		this._callbackLock = false;
 		this._drawQueue = 0;
+		this.yScale = 1;
     }
 
 	// Connect to data source, draw graph if it hasn't been already, and
@@ -94,8 +94,17 @@ export class Helicorder {
 	}
 
 	// Update graph to have new given time frame
-	setScale(durationMins) {
+	setTimeScale(durationMins) {
 		this._graph.heliConfig.fixedTimeScale = getTimeWindow(durationMins);
+		this._drawGraph();
+	}
+
+	setAmpScale(scale) {
+		this.yScale = scale;
+		reinitGraph(this);
+	}
+
+	_drawGraph() {
 		drawGraph(this);
 	}
 
@@ -150,7 +159,7 @@ async function initGraph(helicorder) {
 		//   to the callback.
 		helicorder._observer = createGraphObserver(helicorder._graph, event => {
 			// Each time an event is fired, see if event type exists in _callbacks.
-			//   If it does, dispatch all callbacks connected to that type.s
+			//   If it does, dispatch all callbacks connected to that type.
 			if (event in helicorder._callbacks) {
 				for (const index in helicorder._callbacks[event]) {
 					helicorder._callbacks[event][index]();
@@ -174,6 +183,25 @@ async function initGraph(helicorder) {
 	if (!helicorder.initialized) {
 		helicorder.initialized = true;
 	}
+}
+
+// Creates the graph, initializes it with the past data in the current scale, and
+//   initializes events for the event listeners.
+async function reinitGraph(helicorder) {
+	// Creates a time window object that is compatible with the graph object based
+	//   on the plotTimeMax config value
+	const timeWindow = getTimeWindow(helicorder.config.plotTimeMax);
+	helicorder.timeWindow = timeWindow;
+
+	let seismogram = await getSeismogramFromTimeWindow(helicorder, timeWindow);
+	updateGraphFromSeismogram(helicorder, seismogram);
+}
+
+function updateGraphFromSeismogram(helicorder, seismogram) {
+	let seisData = seisplotjs.seismogram.SeismogramDisplayData.fromSeismogram(
+		seismogram
+	);
+	helicorder._graph.seisData = [seisData];
 }
 
 // Queries past data based on the station configs and instantiates a new graph, 
@@ -203,9 +231,66 @@ async function getSeismogramFromTimeWindow(helicorder, timeWindow) {
 		.channelCode(helicorder.chanCode)
 		.timeWindow(timeWindow);
 
-	let seismograms = await query.querySeismograms();
 	// Since we only have one query, the first seismogram is the only one
-	return seismograms[0];
+	let seismogram = (await query.querySeismograms())[0];
+
+	return getScaledSeismogram(seismogram, helicorder.yScale);
+}
+
+function getScaledSeismogram(seismogram, scale) {
+	// Initialize new seismogram
+	let emptySeg = seismogram.segments[0].cloneWithNewData([]);
+	let newSeismogram = new seisplotjs.seismogram.Seismogram(emptySeg);
+
+	// Find the min and max value (as an array) of all the segments of the seismogram
+	let globalMinMax;
+	for (let i = 0; i < seismogram.segments.length; i++) {
+		globalMinMax = seismogram.segments[i].findMinMax(globalMinMax);
+	}
+
+	// For each segment, scale all data points and append it to the seismogram
+	for (let i = 0; i < seismogram.segments.length; i++) {
+		newSeismogram.append(getScaledSegment(seismogram.segments[i], scale, globalMinMax));
+	}
+
+	return newSeismogram;
+}
+
+function getScaledSegment(seismogramSegment, scale, customMinMax) {
+	const [ DATA_MIN, DATA_MAX ] = HELI_CONFIG.fixedAmplitudeScale;
+	if (!customMinMax) {
+		customMinMax = seismogramSegment.findMinMax();
+	}
+
+	// Use Int32Array for performace (plus it's what seisplotjs uses for segments)
+	let yArr = new Int32Array(seismogramSegment.numPoints);
+	for (let j = 0; j < yArr.length; j++) {
+		yArr[j] = scaleDataPoint(seismogramSegment.y[j], scale, customMinMax, DATA_MIN, DATA_MAX);
+	}
+
+	// Segments in seisplotjs don't allow you to directly set the y array, so
+	//   we clone the old segment to get the new one instead
+	return seismogramSegment.cloneWithNewData(yArr);
+}
+
+function scaleDataPoint(value, scale, globalMinMax, dataRangeMin, dataRangeMax) {
+	// Get midpoint of data range, which is the target midpoint for the shifted data
+	let dataRangeMidpoint = (dataRangeMax - dataRangeMin) / 2 + dataRangeMin;
+	// Calculate the current midpoint of all data
+	let globalMidpoint = 0.5 * (globalMinMax[1] - globalMinMax[0]) + globalMinMax[0];
+	// Get amount to shift each point by to change that midpoint to the global one
+	let shiftAmt = dataRangeMidpoint - scale * globalMidpoint;
+
+	// Scale and shift value, then clamp it to stay inside the data range
+	let newVal = scale * value + shiftAmt;
+	if (newVal < dataRangeMin) {
+		newVal = dataRangeMin;
+	}
+	if (newVal > dataRangeMax) {
+		newVal = dataRangeMax;
+	}
+
+	return newVal;
 }
 
 // Creates a graph observer that watches for changes in the given graphElement,
@@ -239,6 +324,7 @@ function drawGraph(helicorder) {
 		helicorder._callbackLock = true;
 		// Draw all the requests for draw since the last call.
 		for (let i = 0; i < helicorder._drawQueue; i++) {
+			// updateScaleForGraphDraw(helicorder);
 			helicorder._graph.draw();
 		}
 		helicorder._drawQueue = 0;
@@ -296,7 +382,7 @@ function packetHandler(helicorder, packet) {
 		);
 
 		if (helicorder._graph) {
-			helicorder._graph.appendSegment(seisSegment);
+			helicorder._graph.appendSegment(getScaledSegment(seisSegment, helicorder.yScale));
 		}
 
 		if (helicorder.config.showNowMarker) {

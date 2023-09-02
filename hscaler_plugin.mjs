@@ -1,106 +1,67 @@
+import { Scaler } from "./scaler.mjs";
 
-export class HelicorderScaler {
+export class HelicorderScaler extends Scaler {
 
-    constructor(helicorder, timeScaleMin = 60, timeScaleMax = 1440, startPerc = 0) {
+    constructor(helicorder, unitStr, valueMin = 0, valueMax = 1, digitsToRound = 0, startPerc = 0) {
+        super(unitStr, valueMin, valueMax, digitsToRound, startPerc);
         this.helicorder = helicorder;
-        this.timeScaleMin = timeScaleMin;
-        if (this.timeScaleMin < 0 || this.timeScaleMax < 0 || this.timeScaleMax - this.timeScaleMin < 0) {
-            console.error(`Time scale provided is invalid: ${this.timeScaleMin}, ${this.timeScaleMax}`);
-        }
-        this.timeScaleMax = timeScaleMax;
-        this.startPerc = startPerc;
-        if (this.startPerc < 0 || this.startPerc > 1) {
-            console.error(`Start percentage provided is invalid: ${this.startPerc}`);
-        }
-        this.labelUnit = "mins";
-        this._onLabelUpdate = () => {};
-        this._onScaleChange = () => {};
-
-        initScaler(this);
     }
 
-    changeLabelUnit(unitStr) {
-        this.labelUnit = unitStr;
-    }
-
-    onLabelUpdate(callback) {
-        this._onLabelUpdate = callback;
-    }
-
-    onScaleChange(callback) {
-        this._onScaleChange = callback;
-    }
-
-    setInputAttribute(attribute, value) {
-        this._inputEl.setAttribute(attribute, value);
-    }
-
-    setInputClasses(classStr) {
-        this._inputEl.classList = classStr;
-    }
-
-    setLabelAttribute(attribute, value) {
-        this._labelEl.setAttribute(attribute, value);
-    }
-
-    setLabelClasses(classStr) {
-        this._labelEl.classList = classStr;
-    }
-
-    addInputToElement(containerQuerySelector) {
-        document.querySelector(containerQuerySelector).append(this._inputEl);
-    }
-    
-    addLabelToElement(containerQuerySelector) {
-        document.querySelector(containerQuerySelector).append(this._labelEl);
+    // helicorderAttribute can be either a string for a property to
+    //   change (seperated by '.'s if nested) or a setter function for the property
+    setUpdates(helicorderAttribute, eventsToUpdateOn) {
+        const updateFinished = this.setUpdateFunctions((val) => {
+            let listeners = [];
+            if (!Array.isArray(eventsToUpdateOn) && eventsToUpdateOn !== undefined) {
+                eventsToUpdateOn = [eventsToUpdateOn];
+            } else if (!Array.isArray(eventsToUpdateOn) || eventsToUpdateOn.length === 0) {
+                eventsToUpdateOn = [];
+            }
+            const onEventCalled = () => {
+                updateFinished();
+                for (let i = 0; i < eventsToUpdateOn; i++) {
+                    this.helicorder.removeListener(eventsToUpdateOn[i]);
+                }
+                listeners = [];
+            };
+            for (let i = 0; i < eventsToUpdateOn.length; i++) {
+                listeners.push(this.helicorder.addListener(eventsToUpdateOn[i], () => {
+                    onEventCalled();
+                }));
+            }
+            changeAttribute(this, helicorderAttribute, val);
+            if (eventsToUpdateOn.length === 0) {
+                onEventCalled();
+            }
+        });
     }
 }
 
-// Sets up events to change time scale range input label upon each input change 
-//   and to redraw the helicorder at the new scale when the input is released.
-function initScaler(scaler) {
-    scaler._inputEl = document.createElement("input");
-    scaler._inputEl.type = "range";
-    scaler._inputEl.value = scaler.startPerc;
-
-    scaler._labelEl = document.createElement("span");
-
-	// When the range input moves at all, the oninput event sets the currScale
-	//   variable, and then the moment that the input sets a new value
-	//   (on release), the helicorder is redrawn at the new scale.
-	let currScale = updateScaleLabel(scaler);
-	scaler.helicorder.setScale(currScale);
-	scaler._inputEl.oninput = () => {
-		currScale = updateScaleLabel(scaler);
-	};
-	scaler._inputEl.onchange = () => {
-        let initListener, renderListener;
-        const changeCallback = () => {
-            scaler._inputEl.removeAttribute("disabled");
-            scaler.helicorder.removeListener(initListener);
-            scaler.helicorder.removeListener(renderListener);
-        };
-        initListener = scaler.helicorder.addListener("render", changeCallback);
-        renderListener = scaler.helicorder.addListener("render", changeCallback);
-        scaler._inputEl.setAttribute("disabled", "disabled");
-        scaler.helicorder.setScale(currScale);
-        scaler._onScaleChange(currScale);
-	};
-}
-
-// Updates the slider label to the given value (0-1) based on the global 
-//   allowed time scale range of the helicorder. For example, if the min time
-//   scale is 10 minutes and the max is 20, a value of 0.5 would update the 
-//   label to indicate 15 minutes as the time scale. The function also returns
-//   the calculated scale number.
-function updateScaleLabel(scaler) {
-    let value = scaler._inputEl.value;
-    const timeScaleRange = scaler.timeScaleMax - scaler.timeScaleMin;
-    const timeScaleInitial = scaler.startPerc * timeScaleRange + scaler.timeScaleMin;
-	let labelValue = Math.round((value / 100) * timeScaleRange + timeScaleInitial);
-
-	scaler._labelEl.innerText = labelValue + " " + scaler.labelUnit;
-    scaler._onLabelUpdate(scaler._labelEl.innerText);
-
-	return labelValue;
+// helicorderAttribute can be either a string for a property to
+//   change (seperated by '.'s if nested) or a setter function for the property
+function changeAttribute(hScaler, helicorderAttribute, value) {
+    if (typeof helicorderAttribute === "string") {
+        let attrParts = helicorderAttribute.split(".");
+        let currObj = hScaler.helicorder;
+        let i = 0;
+        while (true) {
+            if (attrParts.length == i + 1) {
+                currObj[attrParts[i]] = value;
+                break;
+            } else {
+                i++;
+                try {
+                    currObj = currObj[attrParts[i]];
+                } catch (e) {
+                    console.error(`Cannot find attribute '${helicorderAttribute}'!`);
+                    return;
+                }
+            }
+        }
+    } else if (typeof helicorderAttribute === "function") {
+        const callback = helicorderAttribute.bind(hScaler.helicorder);
+        callback(value);
+    } else {
+        console.error("helicorderAttribute must be a string or a function! Got: ", helicorderAttribute);
+    }
 }

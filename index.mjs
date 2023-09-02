@@ -1,4 +1,5 @@
 import { Helicorder } from "./helicorder.mjs"
+import { Scaler } from "./scaler.mjs";
 import { HelicorderScaler } from "./hscaler_plugin.mjs";
 
 const PLOT_TIME_MIN = 60;
@@ -36,9 +37,15 @@ function setupUI(helicorder) {
 	setHeader(helicorder, helicorder.timeWindow);
 	startClock();
 
-	const hScaler = new HelicorderScaler(helicorder, PLOT_TIME_MIN, PLOT_TIME_MAX, 0);
-	hScaler.addInputToElement("#scale-slider-container");
-	hScaler.addLabelToElement("#scale-slider-container");
+	const timeScaler = new HelicorderScaler(helicorder, "mins", PLOT_TIME_MIN, PLOT_TIME_MAX);
+	timeScaler.setUpdates(helicorder.setTimeScale, "render");
+	timeScaler.addInputToElement("#time-slider-container");
+	timeScaler.addLabelToElement("#time-slider-container");
+
+	const ampScaler = new HelicorderScaler(helicorder, "", 1, 2, 2);
+	ampScaler.setUpdates(helicorder.setAmpScale, []);
+	ampScaler.addInputToElement("#time-slider-container");
+	ampScaler.addLabelToElement("#time-slider-container");
 
 	document.querySelector("button#pause").addEventListener("click", () => {
 		paused = !paused;
