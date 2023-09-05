@@ -268,6 +268,10 @@ function getScaledSeismogram(seismogram, scale) {
 	return newSeismogram;
 }
 
+// function getScaledSegment(seismogramSegment, scale, customMinMax) {
+// 	return seismogramSegment.clone();
+// }
+
 function getScaledSegment(seismogramSegment, scale, customMinMax) {
 	const [ DATA_MIN, DATA_MAX ] = HELI_CONFIG.fixedAmplitudeScale;
 	if (!customMinMax) {
@@ -285,11 +289,13 @@ function getScaledSegment(seismogramSegment, scale, customMinMax) {
 	return seismogramSegment.cloneWithNewData(yArr);
 }
 
-function scaleDataPoint(value, scale, globalMinMax, dataRangeMin, dataRangeMax) {
-	// Get midpoint of data range, which is the target midpoint for the shifted data
-	let dataRangeMidpoint = (dataRangeMax - dataRangeMin) / 2 + dataRangeMin;
-	// Calculate the current midpoint of all data
-	let globalMidpoint = 0.5 * (globalMinMax[1] - globalMinMax[0]) + globalMinMax[0];
+function scaleDataPoint(value, scale, segmentMinMax, dataRangeMin, dataRangeMax, customDataMidpoint) {
+	let dataRangeMidpoint = customDataMidpoint;
+	// Calculate the current midpoint of whole data segment being scaled
+	let globalMidpoint = (segmentMinMax[1] - segmentMinMax[0]) / 2 + segmentMinMax[0];
+	if (!customDataMidpoint) {
+		dataRangeMidpoint = globalMidpoint;
+	}
 	// Get amount to shift each point by to change that midpoint to the global one
 	let shiftAmt = dataRangeMidpoint - scale * globalMidpoint;
 
