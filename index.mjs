@@ -42,8 +42,8 @@ function setupUI(helicorder) {
 	timeScaler.addInputToElement("#time-slider-container");
 	timeScaler.addLabelToElement("#time-slider-container");
 
-	const ampScaler = new HelicorderScaler(helicorder, "", 1, 2, 2);
-	ampScaler.setUpdates(helicorder.setAmpScale, []);
+	const ampScaler = new HelicorderScaler(helicorder, "", 1, 5, 2);
+	ampScaler.setUpdates(helicorder.setAmpScale, "render");
 	ampScaler.addInputToElement("#time-slider-container");
 	ampScaler.addLabelToElement("#time-slider-container");
 

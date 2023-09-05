@@ -19,8 +19,8 @@ export class HelicorderScaler extends Scaler {
             }
             const onEventCalled = () => {
                 updateFinished();
-                for (let i = 0; i < eventsToUpdateOn; i++) {
-                    this.helicorder.removeListener(eventsToUpdateOn[i]);
+                for (let i = 0; i < listeners.length; i++) {
+                    this.helicorder.removeListener(listeners[i]);
                 }
                 listeners = [];
             };
