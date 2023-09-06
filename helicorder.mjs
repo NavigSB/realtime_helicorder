@@ -182,17 +182,7 @@ async function initGraph(helicorder) {
 			}
 		});
 	} else {
-		if (!helicorder._lastEnd) console.error("_lastEnd should be defined when resuming stream!");
-		let pausedDuration = (DateTime.utc().toSeconds() - helicorder._lastEnd) / 60;
-		let pausedTimeWindow = getTimeWindow(pausedDuration);
-		let pausedSeismogram = await getSeismogramFromTimeWindow(helicorder, pausedTimeWindow);
-		// If not defined, no content was returned from url
-		if (pausedSeismogram) {
-			for (let i = 0; i < pausedSeismogram.segments; i++) {
-				let segment = pausedSeismogram.segments[i];
-				helicorder._graph.appendSegment(getScaledSegment(segment, helicorder.yScale));
-			}
-		}
+		await resumeStream(helicorder);
 	}
 
 	if (!helicorder.initialized) {
@@ -200,24 +190,8 @@ async function initGraph(helicorder) {
 	}
 }
 
-function emitGraphEvent(helicorder, eventId) {
-	for (const index in helicorder._callbacks[eventId]) {
-		helicorder._callbacks[eventId][index]();
-	}
-}
-
-// Scales the given helicorder's current data to its scale, which triggers a redraw
-async function updateGraphData(helicorder) {
-	let scaledSeismogram = getScaledSeismogram(helicorder._seismogram, helicorder.yScale);
-	let displayData = seisplotjs.seismogram.SeismogramDisplayData.fromSeismogram(
-		scaledSeismogram
-	);
-	helicorder._graph.seisData = [displayData];
-	emitGraphEvent(helicorder, "render");
-}
-
-// Queries past data based on the station configs and instantiates a new graph, 
-//   given the DataLinkConnection object and a luxon time window for the 
+// Queries past data based on the station configs and instantiates a new graph,
+//   given the DataLinkConnection object and a luxon time window for the
 //   graph time range.
 async function setupGraph(helicorder, timeWindow) {
 	// Create new config object and add custom config to it
@@ -234,6 +208,80 @@ async function setupGraph(helicorder, timeWindow) {
 	return new seisplotjs.helicorder.Helicorder(displayData, fullConfig);
 }
 
+// Creates a graph observer that watches for changes in the given graphElement,
+//   calling the callback with an event type string parameter whenever one happens
+function createGraphObserver(graphElement, callback) {
+	// Once graph is rendered for the first time, add events to
+	//   graph instance functions and remove MutationObserver
+	const onInit = () => {
+		callback("init");
+		setupObserverCallbacks(graphElement, callback);
+		restartObserver.disconnect();
+	};
+	let restartObserver = new MutationObserver(onInit);
+
+	// Observe childList and subtree to see when sp-seismograph
+	//   elements load in, telling us the graph is rendering.
+	restartObserver.observe(graphElement.shadowRoot, {
+		childList: true,
+		subtree: true
+	});
+}
+
+// Modifies the graph to call the callback whenever an important event occurs.
+function setupObserverCallbacks(graphElement, callback) {
+	// Modify graph draw function to do what it did before, in addition
+	//   to calling the callback with the 'render' event
+	const originalDraw = graphElement.draw;
+	const boundDraw = originalDraw.bind(graphElement);
+	graphElement.draw = (segment) => {
+		boundDraw(segment);
+		callback("render");
+	};
+
+	// Modify graph appendSegment function to do what it did before, in
+	//   addition to calling the callback with the 'append' event
+	const originalAppend = graphElement.appendSegment;
+	const boundAppend = originalAppend.bind(graphElement);
+	graphElement.appendSegment = (segment) => {
+		boundAppend(segment);
+		callback("append");
+	};
+}
+
+async function resumeStream(helicorder) {
+	if (!helicorder._lastEnd) console.error("_lastEnd should be defined when resuming stream!");
+	let pausedDuration = (DateTime.utc().toSeconds() - helicorder._lastEnd) / 60;
+	let pausedTimeWindow = getTimeWindow(pausedDuration);
+	let pausedSeismogram = await getSeismogramFromTimeWindow(helicorder, pausedTimeWindow);
+	// If not defined, no content was returned from url
+	if (pausedSeismogram) {
+		for (let i = 0; i < pausedSeismogram.segments; i++) {
+			let segment = pausedSeismogram.segments[i];
+			helicorder._graph.appendSegment(getScaledSegment(segment, helicorder.yScale));
+		}
+	}
+}
+
+// Returns a luxon time window from plotTimeScale minutes before now
+//   to the current time, for use in a graph object.
+function getTimeWindow(plotTimeScale) {
+	// Time window end is the current time
+	const plotEnd = DateTime.utc()
+		.endOf("hour")
+		.plus({ milliseconds: 1 }); // make sure it includes whole hour
+	// Keep each line's hour to an even value
+	if (plotEnd.hour % 2 === 1) {
+		plotEnd.plus({ hours: 1 });
+	}
+	let duration = Duration.fromDurationLike({
+		minute: plotTimeScale,
+	});
+	
+	// Time window for plot, from plotEnd - plotTimeScale to plotEnd
+	return Interval.before(plotEnd, duration);
+}
+
 async function getSeismogramFromTimeWindow(helicorder, timeWindow) {
 	const query = new seisplotjs.fdsndataselect.DataSelectQuery();
 	// Set query parameters to match the helicorder parameters
@@ -248,29 +296,35 @@ async function getSeismogramFromTimeWindow(helicorder, timeWindow) {
 	return (await query.querySeismograms())[0];
 }
 
+async function updateGraphData(helicorder) {
+	let scaledSeismogram = getScaledSeismogram(helicorder._seismogram, helicorder.yScale);
+	let displayData = seisplotjs.seismogram.SeismogramDisplayData.fromSeismogram(
+		scaledSeismogram
+	);
+	helicorder._graph.seisData = [displayData];
+	emitGraphEvent(helicorder, "render");
+}
+
+// Scales the given helicorder's current data to its scale, which triggers a redraw
 function getScaledSeismogram(seismogram, scale) {
 	// Initialize new seismogram
 	let emptySeg = seismogram.segments[0].cloneWithNewData([]);
 	let newSeismogram = new seisplotjs.seismogram.Seismogram(emptySeg);
-
+	
 	// Find the min and max value (as an array) of all the segments of the seismogram
 	let globalMinMax;
 	for (let i = 0; i < seismogram.segments.length; i++) {
 		// Use built-in accumulator to get minMax of all segments
 		globalMinMax = seismogram.segments[i].findMinMax(globalMinMax);
 	}
-
+	
 	// For each segment, scale all data points and append it to the seismogram
 	for (let i = 0; i < seismogram.segments.length; i++) {
 		newSeismogram.append(getScaledSegment(seismogram.segments[i], scale, globalMinMax));
 	}
-
+	
 	return newSeismogram;
 }
-
-// function getScaledSegment(seismogramSegment, scale, customMinMax) {
-// 	return seismogramSegment.clone();
-// }
 
 function getScaledSegment(seismogramSegment, scale, customMinMax) {
 	const [ DATA_MIN, DATA_MAX ] = HELI_CONFIG.fixedAmplitudeScale;
@@ -311,83 +365,10 @@ function scaleDataPoint(value, scale, segmentMinMax, dataRangeMin, dataRangeMax,
 	return newVal;
 }
 
-// Creates a graph observer that watches for changes in the given graphElement,
-//   calling the callback with an event type string parameter whenever one happens
-function createGraphObserver(graphElement, callback) {
-	// Once graph is rendered for the first time, add events to
-	//   graph instance functions and remove MutationObserver
-	const onInit = () => {
-		callback("init");
-		setupObserverCallbacks(graphElement, callback);
-		restartObserver.disconnect();
-	};
-	let restartObserver = new MutationObserver(onInit);
-
-	// Observe childList and subtree to see when sp-seismograph
-	//   elements load in, telling us the graph is rendering.
-	restartObserver.observe(graphElement.shadowRoot, {
-		childList: true,
-		subtree: true
-	});
-}
-
-// Tells the graph to draw itself if the graph is not already drawing. If it
-//   is, the next call to drawGraph will draw twice. This prevents any async
-//   calls to try and draw the graph simulataneously.
-function drawGraph(helicorder) {
-	// Add one count to the amount of times to draw.
-	helicorder._drawQueue++;
-	// If someone else already has the lock, exit
-	if (!helicorder._callbackLock) {
-		helicorder._callbackLock = true;
-		// Draw all the requests for draw since the last call.
-		for (let i = 0; i < helicorder._drawQueue; i++) {
-			// updateScaleForGraphDraw(helicorder);
-			helicorder._graph.draw();
-		}
-		helicorder._drawQueue = 0;
-		helicorder._callbackLock = false;
+function emitGraphEvent(helicorder, eventId) {
+	for (const index in helicorder._callbacks[eventId]) {
+		helicorder._callbacks[eventId][index]();
 	}
-}
-
-// Modifies the graph to call the callback whenever an important event occurs.
-function setupObserverCallbacks(graphElement, callback) {
-	// Modify graph draw function to do what it did before, in addition
-	//   to calling the callback with the 'render' event
-	const originalDraw = graphElement.draw;
-	const boundDraw = originalDraw.bind(graphElement);
-	graphElement.draw = (segment) => {
-		boundDraw(segment);
-		callback("render");
-	};
-
-	// Modify graph appendSegment function to do what it did before, in 
-	//   addition to calling the callback with the 'append' event
-	const originalAppend = graphElement.appendSegment;
-	const boundAppend = originalAppend.bind(graphElement);
-	graphElement.appendSegment = (segment) => {
-		boundAppend(segment);
-		callback("append");
-	};
-}
-
-// Returns a luxon time window from plotTimeScale minutes before now 
-//   to the current time, for use in a graph object.
-function getTimeWindow(plotTimeScale) {
-	// Time window end is the current time
-	const plotEnd = DateTime.utc()
-		.endOf("hour")
-		.plus({ milliseconds: 1 }); // make sure it includes whole hour
-	// Keep each line's hour to an even value
-	if (plotEnd.hour % 2 === 1) {
-		plotEnd.plus({ hours: 1 });
-	}
-	let duration = Duration.fromDurationLike({
-		minute: plotTimeScale,
-	});
-	
-	// Time window for plot, from plotEnd - plotTimeScale to plotEnd
-	return Interval.before(plotEnd, duration);
 }
 
 // Processes packets and adds the new data to the graph.
@@ -417,5 +398,24 @@ function packetHandler(helicorder, packet) {
 		}
 	} else {
 		console.log(`not a mseed packet: ${packet.streamId}`);
+	}
+}
+
+// Tells the graph to draw itself if the graph is not already drawing. If it
+//   is, the next call to drawGraph will draw twice. This prevents any async
+//   calls to try and draw the graph simulataneously.
+function drawGraph(helicorder) {
+	// Add one count to the amount of times to draw.
+	helicorder._drawQueue++;
+	// If someone else already has the lock, exit
+	if (!helicorder._callbackLock) {
+		helicorder._callbackLock = true;
+		// Draw all the requests for draw since the last call.
+		for (let i = 0; i < helicorder._drawQueue; i++) {
+			// updateScaleForGraphDraw(helicorder);
+			helicorder._graph.draw();
+		}
+		helicorder._drawQueue = 0;
+		helicorder._callbackLock = false;
 	}
 }
