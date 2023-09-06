@@ -2,8 +2,8 @@ import { Scaler } from "./scaler.mjs";
 
 export class HelicorderScaler extends Scaler {
 
-    constructor(helicorder, unitStr, valueMin = 0, valueMax = 1, digitsToRound = 0, startPerc = 0) {
-        super(unitStr, valueMin, valueMax, digitsToRound, startPerc);
+    constructor(helicorder, unitStr, valueMin = 0, valueMax = 1, digitsToRound = 0, startPerc = 0, unitsHaveSpace = true) {
+        super(unitStr, valueMin, valueMax, digitsToRound, startPerc, unitsHaveSpace);
         this.helicorder = helicorder;
     }
 

@@ -1,7 +1,7 @@
 
 export class Scaler {
 
-    constructor(unitStr, valueMin = 0, valueMax = 1, digitsToRound = 0, startPerc = 0) {
+    constructor(unitStr, valueMin = 0, valueMax = 1, digitsToRound = 0, startPerc = 0, unitsHaveSpace = true) {
         this.valueMin = valueMin;
         this.valueMax = valueMax;
         if (typeof this.valueMin !== "number" || typeof this.valueMax !== "number") {
@@ -13,6 +13,7 @@ export class Scaler {
             console.error(`Start percentage provided is invalid: ${this.startPerc}`);
         }
         this.labelUnit = unitStr;
+        this.unitsHaveSpace = unitsHaveSpace;
         this._onLabelUpdate = () => {};
         this._onScaleChange = () => {};
         this._updateVar = () => {};
@@ -104,7 +105,7 @@ function updateLabelVal(scaler) {
         labelValue = labelValue.toFixed(scaler.digitsToRound);
     }
 
-	scaler._labelEl.innerText = labelValue + " " + scaler.labelUnit;
+	scaler._labelEl.innerText = labelValue + (scaler.unitsHaveSpace ? " " : "") + scaler.labelUnit;
     scaler._onLabelUpdate(scaler._labelEl.innerText);
 
 	return labelValue;
