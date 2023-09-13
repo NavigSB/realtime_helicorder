@@ -22,10 +22,19 @@ export class GraphQueueBuffer {
     }
 
     addSegment(seismogramSegment) {
-        this.addData(seismogramSegment.y);
+        let startOffsetMillis = seismogramSegment.startTime.toMillis() - this.startTime;
+        if (startOffsetMillis < 0) {
+            console.error("Given segment begins before startTime!");
+        }
+        let indicesFromStart = Math.floor(startOffsetMillis / this._millisPerSample);
+        let indicesFromEnd = indicesFromStart - (this.graphLen + this.queueLen);
+        this.addData(seismogramSegment.y, indicesFromEnd);
     }
 
-    addData(data) {
+    // Note: Adding data at an offset results in "holes" that aren't filled with any special value,
+    //       but with meaningless data that can't be distinguished from normal data. It's up to
+    //       the client to keep track of and patch these holes
+    addData(data, offsetIndex = 0) {
         if (!data) {
             console.log("[WARNING] addData is being called without any input!");
             return;
@@ -33,37 +42,47 @@ export class GraphQueueBuffer {
         if (data.length === undefined) {
             data = [data];
         }
-    
-        let dataLeft = this.bufferLen - (this.partitionIndex + this.queueLen);
+
+        data = [...data];
+        let queueSpacesLeft = this.bufferLen - (this.partitionIndex + this.queueLen/* + offsetIndex*/);
+        // TEMP - soon, holes won't exist in the graph, but while they still do, fill where the holes
+        //        are with 0's
+        for (let i = 0; i < offsetIndex; i++) {
+            data.unshift(0);
+        }
+        
         let staticData = [];
         let cycleData = [];
-        if (dataLeft === 0) {
+        if (queueSpacesLeft <= 0) {
             cycleData = data.slice();
         } else {
-            staticData = data.slice(0, dataLeft);
-            cycleData = data.slice(dataLeft);
+            staticData = data.slice(0, queueSpacesLeft);
+            cycleData = data.slice(queueSpacesLeft);
         }
-    
-        this._addDataWhileNotFull(staticData);
-        this._addDataWhileFull(cycleData);
+        this._addDataWhileNotFull(staticData, 0);
+        this._addDataWhileFull(cycleData, 0);
     }
 
-    _addDataWhileNotFull(data) {
+    _addDataWhileNotFull(data, offsetIndex) {
+        this.queueLen += data.length > 0 ? offsetIndex : 0;
         for (let i = 0; i < data.length; i++) {
-            this.bufferSet(this.partitionIndex + this.queueLen, data[i]);
+            this.bufferSet(this.partitionIndex + this.queueLen + offsetIndex, data[i]);
             this.queueLen++;
         }
     }
 
-    _addDataWhileFull(data) {
-        for (let i = 0; i < data.length; i++) {
+    _addDataWhileFull(data, offsetIndex) {
+        let repetitions = data.length + offsetIndex;
+        for (let i = 0; i < repetitions; i++) {
             if (this.partitionIndex > 0) {
                 this.partitionIndex--;
                 this.graphLen--;
                 this.queueLen++;
             }
             this.shiftLeft();
-            this.bufferSet(this.bufferLen - 1, data[i]);
+            if (i >= offsetIndex) {
+                this.bufferSet(this.bufferLen - 1, data[i]);
+            }
         }
     }
 
@@ -145,7 +164,6 @@ export class GraphQueueBuffer {
 
     shiftLeft(repetitions = 1) {
         this.bufferStartIndex = changeLoopIndex(this.bufferStartIndex, repetitions, this.bufferLen);
-        // (1000/sampleRate) represents the amount of milliseconds that each sample represents  
         this.startTime += this._millisPerSample * repetitions;
     }
 
