@@ -98,14 +98,17 @@ export class Helicorder {
 	}
 
 	// Add a SeismogramSegment to the helicorder
-	addSegment(segment) {
+	async addSegment(segment) {
 		// Adjust internal representation of the full data forward, appending new data
 		//   and removing that amount of data from the back to keep the length the same.
 		this._dataBuffer.addSegment(segment);
-		let updateSegment = this._dataBuffer.updateGraph(segment.y.length);
+		await patchGraphHoles(this);
+		let updateSegment = this._dataBuffer.updateGraph();
 
 		// Add new segment to graph
-		this._graph.appendSegment(getScaledSegment(updateSegment, this.yScale));
+		if (updateSegment) {
+			this._graph.appendSegment(getScaledSegment(updateSegment, this.yScale));
+		}
 	}
 
 	// Update graph to have new given time frame
@@ -179,11 +182,6 @@ async function initGraph(helicorder) {
 				emitGraphEvent(helicorder, eventId);
 			}
 		});
-	} else {
-		await resumeStream(helicorder);
-	}
-
-	if (!helicorder.initialized) {
 		helicorder.initialized = true;
 	}
 }
@@ -199,12 +197,29 @@ async function setupGraph(helicorder, timeWindow) {
 	let seismogram = await getSeismogramFromTimeWindow(helicorder, timeWindow);
 	helicorder._dataBuffer = new GraphQueueBuffer(seismogram, helicorder.bufferTime);
 	helicorder._dataBuffer.updateGraph();
+	await patchGraphHoles(helicorder);
 	let displayData = seisplotjs.seismogram.SeismogramDisplayData.fromSeismogram(
 		getScaledSeismogram(helicorder._dataBuffer.getSeismogram(), helicorder.yScale)
 	);
 
 	// create graph from returned data
 	return new seisplotjs.helicorder.Helicorder(displayData, fullConfig);
+}
+
+async function patchGraphHoles(helicorder) {
+	let safetyMargin = 10;
+	while (helicorder._dataBuffer.getFirstHole() && safetyMargin-- > 0) {
+		let { startTime, endTime } = helicorder._dataBuffer.getFirstHole();
+		let startDateTime = DateTime.fromMillis(startTime, {zone: "UTC"});
+		let endDateTime = DateTime.fromMillis(endTime, {zone: "UTC"});
+		let holeTimeWindow = Interval.fromDateTimes(startDateTime, endDateTime);
+		let holeSeismogram = await getSeismogramFromTimeWindow(helicorder, holeTimeWindow);
+		if (helicorder._dataBuffer.getFirstHole() && holeSeismogram.segments.length > 0) {
+			helicorder._dataBuffer.patchFirstHoleWithSegment(holeSeismogram.segments[0]);
+		} else {
+			console.log("[WARNING] Tried to patch holes when none could be filled.");
+		}
+	}
 }
 
 // Creates a graph observer that watches for changes in the given graphElement,
@@ -246,21 +261,6 @@ function setupObserverCallbacks(graphElement, callback) {
 		boundAppend(segment);
 		callback("append");
 	};
-}
-
-async function resumeStream(helicorder) {
-	if (!helicorder._lastEnd) console.error("_lastEnd should be defined when resuming stream!");
-	let pausedDuration = (DateTime.utc().toSeconds() - helicorder._lastEnd) / 60;
-	let pausedTimeWindow = getTimeWindow(pausedDuration);
-	let pausedSeismogram = await getSeismogramFromTimeWindow(helicorder, pausedTimeWindow);
-	// If not defined, no content was returned from url
-	if (pausedSeismogram) {
-		for (let i = 0; i < pausedSeismogram.segments; i++) {
-			let segment = pausedSeismogram.segments[i];
-			helicorder._dataBuffer.addSegment(segment);
-		}
-		updateGraphData(helicorder);
-	}
 }
 
 // Returns a luxon time window from plotTimeScale minutes before now
@@ -324,7 +324,7 @@ function getScaledSeismogram(seismogram, scale) {
 	
 	// For each segment, scale all data points and append it to the seismogram
 	for (let i = 0; i < seismogram.segments.length; i++) {
-		newSeismogram.append(getScaledSegment(seismogram.segments[i], scale, globalMinMax));
+		newSeismogram.segments[0] = getScaledSegment(seismogram.segments[i], scale, globalMinMax);
 	}
 
 	return newSeismogram;
@@ -376,7 +376,7 @@ function emitGraphEvent(helicorder, eventId) {
 }
 
 // Processes packets and adds the new data to the graph.
-function packetHandler(helicorder, packet) {
+async function packetHandler(helicorder, packet) {
 	// Make sure packet is miniseed for correct conversion to segment
 	if (packet.isMiniseed()) {
 		helicorder.numPackets++;
@@ -386,7 +386,7 @@ function packetHandler(helicorder, packet) {
 
 		if (helicorder._graph) {
 			if (!helicorder._hasUpdateFunc) {
-				helicorder.addSegment(seisSegment);
+				await helicorder.addSegment(seisSegment);
 			}
 			
 			if (helicorder.config.showNowMarker) {

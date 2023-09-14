@@ -12,6 +12,7 @@ export class GraphQueueBuffer {
         this.startTime = seismogram.startTime.toMillis();
         this.segmentTemplate = seismogram.segments[0].cloneWithNewData([]);
         this.dataArr = new BufferArrayClass(this.bufferLen);
+        this.holesArr = [];
         this.bufferStartIndex = 0;
         this.partitionIndex = 0;
         this.graphLen = 0;
@@ -22,18 +23,28 @@ export class GraphQueueBuffer {
     }
 
     addSegment(seismogramSegment) {
-        let startOffsetMillis = seismogramSegment.startTime.toMillis() - this.startTime;
-        if (startOffsetMillis < 0) {
-            console.error("Given segment begins before startTime!");
+        let { dataArr, startIndex } = getDataFromSeismogramSegment(seismogramSegment, this);
+        let offsetIndex = startIndex - (this.graphLen + this.queueLen);
+        if (offsetIndex < 0) {
+            console.error("Cannot add a segment before last inserted data! " +
+                          "If trying to patch a hole, please use patchFirstHole()");
         }
-        let indicesFromStart = Math.floor(startOffsetMillis / this._millisPerSample);
-        let indicesFromEnd = indicesFromStart - (this.graphLen + this.queueLen);
-        this.addData(seismogramSegment.y, indicesFromEnd);
+
+        if (offsetIndex > 0) {
+            // Hole start and end indices are both inclusive
+            this.holesArr.push([
+                this.graphLen + this.queueLen,
+                this.graphLen + this.queueLen + offsetIndex - 1
+            ]);
+            let last = this.holesArr.length - 1;
+            if (last > 0 && this.holesArr[last - 1][1] > this.holesArr[last][0]) {
+                console.error("New hole is not further in time than past holes!");
+            }
+        }
+
+        this.addData(dataArr, offsetIndex);
     }
 
-    // Note: Adding data at an offset results in "holes" that aren't filled with any special value,
-    //       but with meaningless data that can't be distinguished from normal data. It's up to
-    //       the client to keep track of and patch these holes
     addData(data, offsetIndex = 0) {
         if (!data) {
             console.log("[WARNING] addData is being called without any input!");
@@ -86,9 +97,52 @@ export class GraphQueueBuffer {
         }
     }
 
+    // Returns an object with these keys:
+    //  startTime: time of the start of the hole in milliseconds from the epoch
+    //  endTime: time of the end of the hole in milliseconds from the epoch
+    getFirstHole() {
+        if (this.holesArr.length === 0) {
+            return;
+        }
+        let [ startIndex, endIndex ] = this.holesArr[0];
+        return {
+            startTime: startIndex * this._millisPerSample + this.startTime,
+            endTime: endIndex * this._millisPerSample + this.startTime
+        };
+    }
+
+    patchFirstHoleWithSegment(seismogramSegment) {
+        let { dataArr, startIndex } = getDataFromSeismogramSegment(seismogramSegment, this);
+        this.patchFirstHole(dataArr, startIndex);
+    }
+
+    patchFirstHole(dataArr, segmentStartIndex) {
+        if (this.holesArr.length === 0) {
+            console.error("Cannot fill first hole, since there are currently no holes!");
+            return;
+        }
+        const [ holeStart, holeEnd ] = this.holesArr[0];
+        if (segmentStartIndex > holeStart) {
+            console.error("Given data starts after the first hole!");
+            return;
+        }
+        if (segmentStartIndex + dataArr.length <= holeEnd) {
+            console.error("Given data does not reach the end of the first hole!");
+            return;
+        }
+        for (let i = holeStart; i <= holeEnd; i++) {
+            this.bufferSet(i, dataArr[i - segmentStartIndex]);
+        }
+        this.holesArr.shift();
+    }
+
     updateGraph(numValues) {
         if (numValues === undefined) {
             numValues = this.queueLen;
+        }
+        // Limit values in graph to be before the first hole if applicable
+        if (this.holesArr.length > 0 && this.partitionIndex + numValues > this.holesArr[0][0]) {
+            numValues = this.holesArr[0][0] - this.partitionIndex;
         }
         this.partitionIndex += numValues;
         this.queueLen -= numValues;
@@ -113,8 +167,11 @@ export class GraphQueueBuffer {
             this.graphLen = currIndex + 1;
         }
         let newValuesStartIndex = this.graphLen - numValues;
-        let dataAddedArr = this.bufferSlice(newValuesStartIndex, newValuesStartIndex + numValues);
-        return this.getSegment(dataAddedArr, newValuesStartIndex);
+        if (numValues > 0) {
+            let dataAddedArr = this.bufferSlice(newValuesStartIndex, newValuesStartIndex + numValues);
+            return this.getSegment(dataAddedArr, newValuesStartIndex);
+        }
+        return false;
     }
 
     getSeismogram() {
@@ -126,8 +183,8 @@ export class GraphQueueBuffer {
         return seismogram;
     }
 
-    getSegment(yData, bufferStartIndex) {
-        let dataStartMillis = this.startTime + this._millisPerSample * bufferStartIndex;
+    getSegment(yData, startIndex) {
+        let dataStartMillis = this.startTime + this._millisPerSample * startIndex;
         let luxonStartTime = seisplotjs.luxon.DateTime.fromMillis(dataStartMillis);
         return this.segmentTemplate.cloneWithNewData(yData, luxonStartTime);
     }
@@ -175,6 +232,20 @@ export class GraphQueueBuffer {
         this.dataArr[changeLoopIndex(this.bufferStartIndex, index, this.bufferLen)] = value;
     }
 
+}
+
+function getDataFromSeismogramSegment(seismogramSegment, graphQueueBuffer) {
+    const { startTime, _millisPerSample } = graphQueueBuffer;
+    let startOffsetMillis = seismogramSegment.startTime.toMillis() - startTime;
+    if (startOffsetMillis < 0) {
+        console.error("Given segment begins before startTime!");
+    }
+    let indicesFromStart = Math.floor(startOffsetMillis / _millisPerSample);
+
+    return {
+        dataArr: seismogramSegment.y,
+        startIndex: indicesFromStart
+    };
 }
 
 function changeLoopIndex(index, amt, loopLen) {
