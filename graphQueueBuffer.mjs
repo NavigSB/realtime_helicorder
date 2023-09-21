@@ -115,7 +115,11 @@ export class GraphQueueBuffer {
     }
 
     updateGraphTime(updateSeconds) {
-        this.updateGraph(Math.floor(1000 * updateSeconds / this._millisPerSample));
+        let numValues;
+        if (updateSeconds) {
+            numValues = Math.floor(1000 * updateSeconds / this._millisPerSample);
+        }
+        return this.updateGraph(numValues);
     }
 
     updateGraph(numValues) {

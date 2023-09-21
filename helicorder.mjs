@@ -142,7 +142,7 @@ export class Helicorder {
 			let newSegment = this._dataBuffer.updateGraphTime(seconds);
 			if (newSegment) {
 				let bufferMean = this._dataBuffer.getGraphMean();
-				this._graph.appendSegment(getScaledSegment(updateSegment, this.yScale, bufferMean));
+				this._graph.appendSegment(getScaledSegment(newSegment, this.yScale, bufferMean));
 			}
 		};
 	}
