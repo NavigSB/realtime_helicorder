@@ -11,7 +11,10 @@ const HELI_CONFIG = {
 	fixedAmplitudeScale: [-2500, 0],
 	numLines: 12
 }; // Helicorder configuration - can be overridden and added to with customHeliConfig
+// Additional amount of data (in minutes) to store internally
 const EXTRA_MINS_STORED = 10;
+// Minimum amount of time (in milliseconds) to request graph data
+const MIN_DATA_REQ_SIZE = 60000;
 
 export class Helicorder {
 
@@ -56,6 +59,8 @@ export class Helicorder {
 		this._callbackLock = false;
 		this._drawQueue = 0;
 		this._hasUpdateFunc = false;
+		this._segmentQueue = [];
+		this._processingSegments = false;
     }
 
 	// Connect to data source, draw graph if it hasn't been already, and
@@ -99,22 +104,47 @@ export class Helicorder {
 
 	// Add a SeismogramSegment to the helicorder
 	async addSegment(segment) {
-		// Adjust internal representation of the full data forward, appending new data
-		//   and removing that amount of data from the back to keep the length the same.
-		this._dataBuffer.addSegment(segment);
-		await patchGraphHoles(this);
-		let updateSegment = this._dataBuffer.updateGraph();
-
-		// Add new segment to graph
-		if (updateSegment) {
-			this._graph.appendSegment(getScaledSegment(updateSegment, this.yScale));
+		this._segmentQueue.push(segment);
+		if (this._processingSegments) {
+			return;
 		}
+		
+		this._processingSegments = true;
+		for (let i = 0; i < this._segmentQueue.length; i++) {
+			// Adjust internal representation of the full data forward, appending new data
+			//   and removing that amount of data from the back to keep the length the same.
+			this._dataBuffer.addSegment(this._segmentQueue[i]);
+
+			let updateSegment;
+			if (!this._hasUpdateFunc) {
+				updateSegment = this._dataBuffer.updateGraph();
+			}
+			// Add new segment to graph
+			if (updateSegment) {
+				let bufferMean = this._dataBuffer.getGraphMean();
+				this._graph.appendSegment(getScaledSegment(updateSegment, this.yScale, bufferMean));
+			}
+			this._segmentQueue.shift();
+		}
+		await patchGraphHoles(this);
+		this._processingSegments = false;
 	}
 
 	// Update graph to have new given time frame
 	setTimeScale(durationMins) {
 		this._graph.heliConfig.fixedTimeScale = getTimeWindow(durationMins);
 		this._drawGraph();
+	}
+
+	getGraphUpdateFunction() {
+		this._hasUpdateFunc = true;
+		return (seconds) => {
+			let newSegment = this._dataBuffer.updateGraphTime(seconds);
+			if (newSegment) {
+				let bufferMean = this._dataBuffer.getGraphMean();
+				this._graph.appendSegment(getScaledSegment(updateSegment, this.yScale, bufferMean));
+			}
+		};
 	}
 
 	setAmpScale(scale) {
@@ -199,7 +229,7 @@ async function setupGraph(helicorder, timeWindow) {
 	helicorder._dataBuffer.updateGraph();
 	await patchGraphHoles(helicorder);
 	let displayData = seisplotjs.seismogram.SeismogramDisplayData.fromSeismogram(
-		getScaledSeismogram(helicorder._dataBuffer.getSeismogram(), helicorder.yScale)
+		getBufferScaledSeismogram(helicorder._dataBuffer, helicorder.yScale)
 	);
 
 	// create graph from returned data
@@ -210,14 +240,24 @@ async function patchGraphHoles(helicorder) {
 	let safetyMargin = 10;
 	while (helicorder._dataBuffer.getFirstHole() && safetyMargin-- > 0) {
 		let { startTime, endTime } = helicorder._dataBuffer.getFirstHole();
+		if (endTime - startTime < MIN_DATA_REQ_SIZE) {
+			let addedSize = Math.floor((MIN_DATA_REQ_SIZE - (endTime - startTime)) / 2);
+			startTime -= addedSize;
+			endTime += addedSize;
+		}
 		let startDateTime = DateTime.fromMillis(startTime, {zone: "UTC"});
 		let endDateTime = DateTime.fromMillis(endTime, {zone: "UTC"});
 		let holeTimeWindow = Interval.fromDateTimes(startDateTime, endDateTime);
 		let holeSeismogram = await getSeismogramFromTimeWindow(helicorder, holeTimeWindow);
-		if (helicorder._dataBuffer.getFirstHole() && holeSeismogram.segments.length > 0) {
-			helicorder._dataBuffer.patchFirstHoleWithSegment(holeSeismogram.segments[0]);
+		if (holeSeismogram && holeSeismogram.segments.length > 0 && helicorder._dataBuffer.getFirstHole()) {
+			let success = helicorder._dataBuffer.patchFirstHoleWithSeismogram(holeSeismogram);
+			if (!success) {
+				console.log("[WARNING] Could not patch current hole with retrieved seismogram.");
+				break;
+			}
 		} else {
 			console.log("[WARNING] Tried to patch holes when none could be filled.");
+			break;
 		}
 	}
 }
@@ -269,6 +309,7 @@ function getTimeWindow(plotTimeScale) {
 	// Time window end is the current time
 	const plotEnd = DateTime.utc()
 		.endOf("hour")
+		// .minus({ minutes: 10 })
 		.plus({ milliseconds: 1 }); // make sure it includes whole hour
 	// Keep each line's hour to an even value
 	if (plotEnd.hour % 2 === 1) {
@@ -297,11 +338,10 @@ async function getSeismogramFromTimeWindow(helicorder, timeWindow) {
 }
 
 async function updateGraphData(helicorder) {
-	if (helicorder._dataBuffer.graphLen === 0) {
+	if (helicorder._dataBuffer.isGraphEmpty()) {
 		return;
 	}
-	let bufferSeismogram = helicorder._dataBuffer.getSeismogram();
-	let scaledSeismogram = getScaledSeismogram(bufferSeismogram, helicorder.yScale);
+	let scaledSeismogram = getBufferScaledSeismogram(helicorder._dataBuffer, helicorder.yScale);
 	let displayData = seisplotjs.seismogram.SeismogramDisplayData.fromSeismogram(
 		scaledSeismogram
 	);
@@ -310,36 +350,32 @@ async function updateGraphData(helicorder) {
 }
 
 // Scales the given helicorder's current data to its scale, which triggers a redraw
-function getScaledSeismogram(seismogram, scale) {
+function getBufferScaledSeismogram(dataBuffer, scale) {
 	// Initialize new seismogram
+	let seismogram = dataBuffer.getSeismogram();
+	let mean = dataBuffer.getGraphMean();
 	let emptySeg = seismogram.segments[0].cloneWithNewData([]);
 	let newSeismogram = new seisplotjs.seismogram.Seismogram(emptySeg);
 	
-	// Find the min and max value (as an array) of all the segments of the seismogram
-	let globalMinMax;
-	for (let i = 0; i < seismogram.segments.length; i++) {
-		// Use built-in accumulator to get minMax of all segments
-		globalMinMax = seismogram.segments[i].findMinMax(globalMinMax);
-	}
-	
 	// For each segment, scale all data points and append it to the seismogram
 	for (let i = 0; i < seismogram.segments.length; i++) {
-		newSeismogram.segments[0] = getScaledSegment(seismogram.segments[i], scale, globalMinMax);
+		newSeismogram.segments[0] = getScaledSegment(seismogram.segments[i], scale, mean);
 	}
 
 	return newSeismogram;
 }
 
-function getScaledSegment(seismogramSegment, scale, customMinMax) {
+function getScaledSegment(seismogramSegment, scale, customMidpoint) {
 	const [ DATA_MIN, DATA_MAX ] = HELI_CONFIG.fixedAmplitudeScale;
-	if (!customMinMax) {
-		customMinMax = seismogramSegment.findMinMax();
+	if (!customMidpoint) {
+		let minMax = seismogramSegment.findMinMax();
+		customMidpoint = (minMax[1] - minMax[0]) / 2 + minMax[0];
 	}
 
 	// Use Int32Array for performace (plus it's what seisplotjs uses for segments)
 	let yArr = new Int32Array(seismogramSegment.numPoints);
 	for (let j = 0; j < yArr.length; j++) {
-		yArr[j] = scaleDataPoint(seismogramSegment.y[j], scale, customMinMax, DATA_MIN, DATA_MAX);
+		yArr[j] = scaleDataPoint(seismogramSegment.y[j], scale, customMidpoint, DATA_MIN, DATA_MAX);
 	}
 
 	// Segments in seisplotjs don't allow you to directly set the y array, so
@@ -347,15 +383,14 @@ function getScaledSegment(seismogramSegment, scale, customMinMax) {
 	return seismogramSegment.cloneWithNewData(yArr);
 }
 
-function scaleDataPoint(value, scale, segmentMinMax, dataRangeMin, dataRangeMax, customDataMidpoint) {
+function scaleDataPoint(value, scale, segmentMidpoint, dataRangeMin, dataRangeMax, customDataMidpoint) {
 	let dataRangeMidpoint = customDataMidpoint;
 	// Calculate the current midpoint of whole data segment being scaled
-	let globalMidpoint = (segmentMinMax[1] - segmentMinMax[0]) / 2 + segmentMinMax[0];
 	if (!customDataMidpoint) {
-		dataRangeMidpoint = globalMidpoint;
+		dataRangeMidpoint = segmentMidpoint;
 	}
 	// Get amount to shift each point by to change that midpoint to the global one
-	let shiftAmt = dataRangeMidpoint - scale * globalMidpoint;
+	let shiftAmt = dataRangeMidpoint - scale * segmentMidpoint;
 
 	// Scale and shift value, then clamp it to stay inside the data range
 	let newVal = scale * value + shiftAmt;
@@ -385,9 +420,7 @@ async function packetHandler(helicorder, packet) {
 		);
 
 		if (helicorder._graph) {
-			if (!helicorder._hasUpdateFunc) {
-				await helicorder.addSegment(seisSegment);
-			}
+			await helicorder.addSegment(seisSegment);
 			
 			if (helicorder.config.showNowMarker) {
 				// Add a marker that indicates where "now" is on the plot
