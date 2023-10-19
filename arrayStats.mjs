@@ -1,15 +1,4 @@
 
-// Most common: mean, mode, median, minimum, maximum, range, nth quartile locations, 
-//   variance/standard deviation, Kurtosis, Skewness
-
-// Categories from a data perspective: 
-//   - Operation transforming ALL data points: mean, std dev, skewness, kurtosis
-//   - Operation selecting particulars from comparison function: mode, minimum, maximum, range
-//   - Operation selecting particular indices: median, quartiles
-
-// These statistics assume that the initial buffer is empty, so the constructor is just to get
-//   the reference stored.
-
 // Abstract class as specification for what the other statistic classes should implement.
 class BufferStatistic {
     constructor() {
