@@ -1,6 +1,6 @@
 import { Helicorder } from "./helicorder.mjs"
-import { Scaler } from "./scaler.mjs";
 import { HelicorderScaler } from "./hscaler_plugin.mjs";
+import { Scaler } from "./scaler.mjs";
 
 const PLOT_TIME_MIN = 60;
 const PLOT_TIME_MAX = 60 * 24;
@@ -10,21 +10,30 @@ const LUX_CONFIG = {
 }; // Luxon Config for display
 
 let helicorder;
+let updateHelicorder;
 let fullyLoaded = false;
 let paused = false;
+let yScale = 1;
 
 async function main() {
     helicorder = new Helicorder("UW", "JCW", "", "EHZ", {
         showNowMarker: true
     });
-    helicorder.addListener("init", () => {
+    helicorder.addListener("initData", () => {
         if (!fullyLoaded) {
             setupUI(helicorder);
             fullyLoaded = true;
         }
     });
+	// updateHelicorder = helicorder.getGraphUpdateFunction();
+	helicorder.addDataTransform((point, statistics) => {
+		const { mean } = statistics;
+		let shiftAmt = mean * (1 - yScale);
+		return clamp(point * yScale + shiftAmt, helicorder.DATA_MIN, helicorder.DATA_MAX);
+	});
     await helicorder.start();
-    helicorder.addToElement("#realtime");   
+	// updateHelicorder();
+    helicorder.addToElement("#realtime");
 }
 
 // Initializes headers, the clock, and inputs, given the
@@ -42,8 +51,14 @@ function setupUI(helicorder) {
 	timeScaler.addInputToElement("#time-slider-container");
 	timeScaler.addLabelToElement("#time-slider-container");
 
-	const ampScaler = new HelicorderScaler(helicorder, "x", 1, 5, 2, 0, false);
-	ampScaler.setUpdates(helicorder.setAmpScale, "render");
+	const ampScaler = new Scaler("x", 1, 5, 2, 0, false);
+	let doneUpdating = ampScaler.setUpdateFunctions((value) => {
+		yScale = value;
+		helicorder.rerender();
+		doneUpdating();
+	});
+	// const ampScaler = new HelicorderScaler(helicorder, "x", 1, 5, 2, 0, false);
+	// ampScaler.setUpdates(helicorder.setAmpScale, "render");
 	ampScaler.addInputToElement("#time-slider-container");
 	ampScaler.addLabelToElement("#time-slider-container");
 
@@ -55,6 +70,10 @@ function setupUI(helicorder) {
         } else {
             helicorder.start();
         }
+	});
+
+	document.querySelector("button#update-btn").addEventListener("click", () => {
+		updateHelicorder();
 	});
 }
 
@@ -72,6 +91,16 @@ function startClock() {
 	setInterval(() => {
 		currentTimeDiv.textContent = new Date().toISOString();
 	}, 1000);
+}
+
+function clamp(value, min, max) {
+	if (value < min) {
+		return min;
+	}
+	if (value > max) {
+		return max;
+	}
+	return value;
 }
 
 main();

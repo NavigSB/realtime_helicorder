@@ -1,7 +1,7 @@
 /**
  * First attempt at recreating the helicorders on pnsn.org as a "realtime" display with scaling
  */
-import * as seisplotjs from "./seisplotjs_3.0.0-alpha.1_standalone.mjs";
+import * as seisplotjs from "./seisplotjs_3.1.1_standalone.mjs";
 const { DateTime, Duration, Interval } = seisplotjs.luxon;
 const d3 = seisplotjs.d3;
 

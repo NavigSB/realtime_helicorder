@@ -1,14 +1,19 @@
-import * as seisplotjs from "./seisplotjs_3.0.0-alpha.1_standalone.mjs";
+import { MaximumStatistic, MeanStatistic, MinimumStatistic } from "./arrayStats.mjs";
+import * as seisplotjs from "./seisplotjs_3.1.1_standalone.mjs";
 
 
 const BufferArrayClass = Int32Array;
 
 export class GraphQueueBuffer {
 
-    constructor(seismogram, plotMins) {
-        this.bufferLen = Math.floor(60 * plotMins * seismogram.sampleRate);
+    // getPlotStartFunction: Get graph start in millis from epoch
+    constructor(seismogram, plotMinsMax, getPlotStartFunction) {
+        this.bufferLen = Math.floor(60 * plotMinsMax * seismogram.sampleRate);
         this.sampleRate = seismogram.sampleRate;
         this.startTime = seismogram.startTime.toMillis();
+        this.getPlotStart = getPlotStartFunction;
+        this.plotStart = this.getPlotStart();
+        console.log("The GraphQueueBuffer has an initial start time of: " + new Date(this.plotStart).toString());
         this._millisPerSample = 1000 / this.sampleRate;
         this._dataArr = new BufferArrayClass(this.bufferLen);
         this._dataArr.fill(-2500);
@@ -16,7 +21,19 @@ export class GraphQueueBuffer {
         this._partitionIndex = 0;
         this._graphLen = 0;
         this._queueLen = 0;
-        this._mean = 0;
+        this._getStatisticIndex = (i) => {
+            let plotStartIndex = Math.floor((this.plotStart - this.startTime) / this._millisPerSample);
+            return this.bufferGet(plotStartIndex + i);
+        };
+        this._getStatisticPlotLen = () => {
+            let plotStartIndex = Math.floor((this.plotStart - this.startTime) / this._millisPerSample);
+            return this.graphLen - plotStartIndex;
+        };
+        this._statistics = {
+            mean: new MeanStatistic(this._getStatisticIndex, this._getStatisticPlotLen),
+            maximum: new MaximumStatistic(this._getStatisticIndex, this._getStatisticPlotLen),
+            minimum: new MinimumStatistic(this._getStatisticIndex, this._getStatisticPlotLen)
+        };
         this._holesArr = [];
         this._segmentTemplate = seismogram.segments[0].cloneWithNewData([]);
         for (let i = 0; i < seismogram.segments.length; i++) {
@@ -67,6 +84,8 @@ export class GraphQueueBuffer {
             data = [data];
         }
 
+        console.log("Legit just adding " + data.length + " values using addData... This represents " + ((data.length * this._millisPerSample) / (1000 * 60) + " mins of data"));
+
         let queueSpacesLeft = this.bufferLen - (this._graphLen + this._queueLen + offsetIndex);
         
         let staticData = [];
@@ -79,20 +98,18 @@ export class GraphQueueBuffer {
         }
         this._addDataWhileNotFull(staticData, offsetIndex);
         this._addDataWhileFull(cycleData, offsetIndex);
+
+        console.log("Just finished addData... Graph = " + ((this._graphLen * this._millisPerSample) / (1000 * 60)) + " mins (" + this._graphLen + " values) and queue = " + ((this._queueLen * this._millisPerSample) / (1000 * 60)) + " mins (" + this._queueLen + " values).");
+
         return true;
     }
 
     _addDataWhileNotFull(data, offsetIndex) {
-        // Return mean variable to only be the sum of values
-        this._mean *= this._graphLen + this._queueLen;
         this._queueLen += data.length > 0 ? offsetIndex : 0;
         for (let i = 0; i < data.length; i++) {
             this.bufferSet(this._partitionIndex + this._queueLen, data[i]);
-            this._mean += data[i];
             this._queueLen++;
         }
-        // Divide mean by new amount of data
-        this._mean /= this._graphLen + this._queueLen;
     }
 
     _addDataWhileFull(data, offsetIndex) {
@@ -105,10 +122,6 @@ export class GraphQueueBuffer {
             }
             this.shiftLeft();
             if (i >= offsetIndex) {
-                // Total values don't change, so divide the change in mean by total length
-                //   to get the overall mean change
-                let meanSumChange = data[i] - this.bufferGet(this.bufferLen - 1);
-                this._mean += meanSumChange / (this._graphLen + this._queueLen);
                 this.bufferSet(this.bufferLen - 1, data[i]);
             }
         }
@@ -123,12 +136,16 @@ export class GraphQueueBuffer {
     }
 
     updateGraph(numValues) {
+        // TODO: It's something about the ordering of the removal and addition parts in here... Maybe merge 'em?
+        console.log("Calling updateGraph with " + numValues + " values!");
         if (numValues === undefined) {
             numValues = this._queueLen;
         }
+        console.log("Okay found out the queue has " + numValues + " values! Going for it...");
         // Limit values in graph to be before the first hole if applicable
         if (this._holesArr.length > 0 && this._partitionIndex + numValues > this._holesArr[0][0]) {
             numValues = this._holesArr[0][0] - this._partitionIndex;
+            console.log("Wait wait wait, actually " + numValues + " values. NOW go for it");
         }
 
         this._partitionIndex += numValues;
@@ -140,13 +157,41 @@ export class GraphQueueBuffer {
             this._queueLen = 0;
         }
         this.updateGraphLength(numValues);
-    
+        
+        let oldPlotStart = this.plotStart;
+        this.plotStart = this.getPlotStart();
+        if (this.plotStart !== oldPlotStart) {
+            // TODO: Well, I think this code below's doing the right thing, but... There's some errors. Not exactly sure what's happening.
+            //         Whatever it is, I'm quite positive we shouldn't be adding 8340000 values that immediately get removed. Anyway, good luck!
+            // If new start moves forward, remove those values. If new start moves backward, add new values.
+            let startIndex = (Math.min(this.plotStart, oldPlotStart) - this.startTime) / this._millisPerSample;
+            let endIndex = startIndex + Math.abs(this.plotStart - oldPlotStart) / this._millisPerSample;
+            // console.log(this.sampleRate + " Hz = " + this._millisPerSample + " ms/sample. This gives us ");
+            console.log("Just for transparency, there are currently " + ((this._graphLen * this._millisPerSample) / (1000 * 60)) + " mins of data in the graph rn");
+            console.log(((oldPlotStart >= this.plotStart) ? "Adding" : "Removing") + " " + (((endIndex - startIndex) * this._millisPerSample) / (1000 * 60)) + " mins of data that go from " + new Date(Math.min(this.plotStart, oldPlotStart)).toString() + " -> " + new Date(Math.max(this.plotStart, oldPlotStart)).toString() + " because the start time changed...");
+            console.log("Btw, indices are: " + startIndex + " and " + endIndex + ". For contrast, the whole array is: " + this._dataArr.length + " values");
+            for (let i = startIndex; i < endIndex; i++) {
+                if (oldPlotStart < this.plotStart) {
+                    this._updateStatistics(this.bufferGet(i), null);
+                } else {
+                    this._updateStatistics(null, this.bufferGet(i));
+                }
+            }
+        }
+
         let newValuesStartIndex = this._graphLen - numValues;
         if (numValues > 0) {
-            let dataAddedArr = 
-                this.bufferSlice(newValuesStartIndex, newValuesStartIndex + numValues);
+            let dataAddedArr = this.bufferSlice(newValuesStartIndex, newValuesStartIndex + numValues);
+            console.log("Adding " + dataAddedArr.length + " values because we called graphUpdate... This represents " + ((dataAddedArr.length * this._millisPerSample) / (1000 * 60) + " mins of data"));
+            // Update statistics with newValues
+            for (let i = 0; i < dataAddedArr.length; i++) {
+                this._updateStatistics(null, dataAddedArr[i]);
+            }
+            console.log("Just finished updateGraph... Graph = " + ((this._graphLen * this._millisPerSample) / (1000 * 60)) + " mins (" + this._graphLen + " values) and queue = " + ((this._queueLen * this._millisPerSample) / (1000 * 60)) + " mins (" + this._queueLen + " values).");
             return this.getSegment(dataAddedArr, newValuesStartIndex);
         }
+
+        console.log("Finished updateGraph but couldn't do it somehow");
         return false;
     }
 
@@ -226,17 +271,28 @@ export class GraphQueueBuffer {
         return this._graphLen === 0;
     }
 
-    getGraphMean() {
-        return this._mean;
+    getStatistics() {
+        let stats = {};
+        let statNames = Object.keys(this._statistics);
+        for (let i = 0; i < statNames.length; i++) {
+            stats[statNames[i]] = this._statistics[statNames[i]].getValue();
+        }
+        return stats;
+    }
+
+    _updateStatistics(oldValue, newValue) {
+        let statNames = Object.keys(this._statistics);
+        for (let i = 0; i < statNames.length; i++) {
+            this._statistics[statNames[i]].update(oldValue, newValue);
+        }
     }
 
     getSeismogram() {
-        let seismogram = new seisplotjs.seismogram.Seismogram(this._segmentTemplate);
         if (this._graphLen === 0) {
-            return seismogram;
+            return null;
         }
-        seismogram.segments[0] = this.getSegment(this.getGraph(), 0);
-        return seismogram;
+        let seisSeg = this.getSegment(this.getGraph(), 0);
+        return new seisplotjs.seismogram.Seismogram(seisSeg);
     }
 
     getSegment(yData, startIndex) {
@@ -272,7 +328,16 @@ export class GraphQueueBuffer {
     }
 
     shiftLeft(repetitions = 1) {
-        this._bufferStartIndex = changeLoopIndex(this._bufferStartIndex, repetitions, this.bufferLen);
+        // TODO: Might want to remove this part later... We'll see
+        for (let i = 0; i < repetitions; i++) {
+            // let oldVal = this.bufferGet(0);
+            // let newVal = this.bufferGet(this._graphLen);
+            // Do actual shift
+            this._bufferStartIndex = changeLoopIndex(this._bufferStartIndex, 1, this.bufferLen);
+            // Update statistics when values leave the graph
+            // this._updateStatistics(oldVal, newVal);
+        }
+        // Move start time back the number of samples removed
         this.startTime += this._millisPerSample * repetitions;
     }
 
@@ -281,7 +346,8 @@ export class GraphQueueBuffer {
     }
 
     bufferSet(index, value) {
-        this._dataArr[changeLoopIndex(this._bufferStartIndex, index, this.bufferLen)] = value;
+        let absoluteIndex = changeLoopIndex(this._bufferStartIndex, index, this.bufferLen);
+        this._dataArr[absoluteIndex] = value;
     }
 
 }

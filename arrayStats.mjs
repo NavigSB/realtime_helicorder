@@ -39,7 +39,7 @@ export class IterativeStatistic extends BufferStatistic {
     }
 }
 
-const EXTREME_VALUES_STORED = 10;
+const EXTREME_VALUES_STORED = 100;
 export class ComparisonStatistic extends BufferStatistic {
     /*
         comparisonFunction: compares two values and returns a positive number if the first value has a greater
@@ -84,6 +84,7 @@ export class ComparisonStatistic extends BufferStatistic {
     }
 
     _scanFullArray() {
+        console.log("Scanning full array...");
         let extremeArr = [];
         for (let i = 0; i < this.getBufferLen(); i++) {
             let value = this.getBufferVal(i);
@@ -96,6 +97,7 @@ export class ComparisonStatistic extends BufferStatistic {
             }
         }
         this.extremeValsArr = extremeArr;
+        console.log("New extreme arr: ", JSON.parse(JSON.stringify(extremeArr)));
     }
 }
 
@@ -185,6 +187,9 @@ function insertValueIntoSortedArr(sortedArr, value, compFunc) {
         sortedArr[currIndex - 1] = value;
         currIndex--;
     }
+    if (currIndex == 0) {
+        console.log("Hi! Comparison has a new extreme! It's:", sortedArr[0]);
+    }
 }
 
 // A greatestEval array is an array that only stores the highest values in a series,
@@ -202,7 +207,7 @@ function updateExtremeValsArray(extremeArr, maxLen, oldValue, newValue, compFunc
     // Checks whether the value being replaced should have been in the greatestEvalArr
     //   (we check for ties also because it affects whether we know the value should 
     //   continue to be in the array)
-    if (valueDefined(oldValue) && compFunc(oldValue, peekEnd(extremeArr)) >= 0) {
+    if (valueDefined(oldValue) && extremeArr.length > 0 && compFunc(oldValue, peekEnd(extremeArr)) >= 0) {
         let valueIndex = extremeArr.indexOf(oldValue);
         if (valueIndex < 0) {
             console.error("The old greatestEvalArr did not contain the expected value!");

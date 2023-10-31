@@ -1,14 +1,16 @@
 
-import * as seisplotjs from "./seisplotjs_3.0.0-alpha.1_standalone.mjs";
+import * as seisplotjs from "./seisplotjs_3.1.1_standalone.mjs";
 const { DateTime, Duration, Interval } = seisplotjs.luxon;
 import { GraphQueueBuffer } from "./graphQueueBuffer.mjs";
 
+const DATA_MIN = -2500;
+const DATA_MAX = 0;
 const HELI_CONFIG = {
 	wheelZoom: false,
 	isYAxisNice: false,
   	doGain: true,
   	centeredAmp: false,
-	fixedAmplitudeScale: [-2500, 0],
+	fixedAmplitudeScale: [DATA_MIN, DATA_MAX],
 	numLines: 12
 }; // Helicorder configuration - can be overridden and added to with customHeliConfig
 // Additional amount of data (in minutes) to store internally
@@ -29,6 +31,8 @@ export class Helicorder {
 	 * customHeliConfig - custom configuration for the graph object (seisplotjs.helicorder.Helicorder)
 	*/
     constructor(netCode, staCode, locCode, chanCode, config, customHeliConfig) {
+		this.DATA_MIN = DATA_MIN;
+		this.DATA_MAX = DATA_MAX;
 		this.netCode = netCode;
         this.staCode = staCode;
         this.locCode = locCode;
@@ -53,10 +57,12 @@ export class Helicorder {
 			title: `Helicorder for ${this.matchPattern}`,
 			...(customHeliConfig ? customHeliConfig : {})
 		};
+		this._hasRendered = false;
 		this._lastEnd;
 		this._callbacks = {};
 		this._currCallbackId = 0;
 		this._callbackLock = false;
+		this._dataTransforms = [];
 		this._drawQueue = 0;
 		this._hasUpdateFunc = false;
 		this._segmentQueue = [];
@@ -121,19 +127,22 @@ export class Helicorder {
 			}
 			// Add new segment to graph
 			if (updateSegment) {
-				let bufferMean = this._dataBuffer.getGraphMean();
-				this._graph.appendSegment(getScaledSegment(updateSegment, this.yScale, bufferMean));
+				// let bufferMean = this._dataBuffer.getGraphMean();
+				// this._graph.appendSegment(getScaledSegment(updateSegment, this.yScale, bufferMean));
+				this._graph.appendSegment(getTransformedSegment(this, updateSegment));
 			}
 			this._segmentQueue.shift();
 		}
 		await patchGraphHoles(this);
 		this._processingSegments = false;
+
+		console.log(JSON.parse(JSON.stringify(this._dataBuffer.getStatistics())));
 	}
 
 	// Update graph to have new given time frame
 	setTimeScale(durationMins) {
 		this._graph.heliConfig.fixedTimeScale = getTimeWindow(durationMins);
-		this._drawGraph();
+		this.rerender();
 	}
 
 	getGraphUpdateFunction() {
@@ -141,10 +150,15 @@ export class Helicorder {
 		return (seconds) => {
 			let newSegment = this._dataBuffer.updateGraphTime(seconds);
 			if (newSegment) {
-				let bufferMean = this._dataBuffer.getGraphMean();
-				this._graph.appendSegment(getScaledSegment(newSegment, this.yScale, bufferMean));
+				// let bufferMean = this._dataBuffer.getGraphMean();
+				// this._graph.appendSegment(getScaledSegment(newSegment, this.yScale, bufferMean));
+				this._graph.appendSegment(getTransformedSegment(this, newSegment));
 			}
 		};
+	}
+
+	addDataTransform(transformFunc) {
+		this._dataTransforms.push(transformFunc);
 	}
 
 	setAmpScale(scale) {
@@ -152,7 +166,8 @@ export class Helicorder {
 		updateGraphData(this);
 	}
 
-	_drawGraph() {
+	rerender() {
+		updateGraphData(this);
 		drawGraph(this);
 	}
 
@@ -212,6 +227,7 @@ async function initGraph(helicorder) {
 				emitGraphEvent(helicorder, eventId);
 			}
 		});
+		emitGraphEvent(helicorder, "initData");
 		helicorder.initialized = true;
 	}
 }
@@ -225,11 +241,15 @@ async function setupGraph(helicorder, timeWindow) {
 	Object.assign(fullConfig, helicorder._graphConfig);
 
 	let seismogram = await getSeismogramFromTimeWindow(helicorder, timeWindow);
-	helicorder._dataBuffer = new GraphQueueBuffer(seismogram, helicorder.bufferTime);
+	helicorder._dataBuffer = new GraphQueueBuffer(seismogram, helicorder.bufferTime, () => {
+		// Get graph (the actual visual start) start in millis from epoch
+		return fullConfig.fixedTimeScale.start.ts;
+	});
 	helicorder._dataBuffer.updateGraph();
 	await patchGraphHoles(helicorder);
 	let displayData = seisplotjs.seismogram.SeismogramDisplayData.fromSeismogram(
-		getBufferScaledSeismogram(helicorder._dataBuffer, helicorder.yScale)
+		// getBufferScaledSeismogram(helicorder._dataBuffer, helicorder.yScale)
+		getBufferTransformedSeismogram(helicorder)
 	);
 
 	// create graph from returned data
@@ -309,7 +329,7 @@ function getTimeWindow(plotTimeScale) {
 	// Time window end is the current time
 	const plotEnd = DateTime.utc()
 		.endOf("hour")
-		// .minus({ minutes: 10 })
+		// .minus({ minutes: 20 })
 		.plus({ milliseconds: 1 }); // make sure it includes whole hour
 	// Keep each line's hour to an even value
 	if (plotEnd.hour % 2 === 1) {
@@ -331,7 +351,7 @@ async function getSeismogramFromTimeWindow(helicorder, timeWindow) {
 		.stationCode(helicorder.staCode)
 		.locationCode(helicorder.locCode)
 		.channelCode(helicorder.chanCode)
-		.timeWindow(timeWindow);
+		.timeRange(timeWindow);
 
 	// Since we only have one query, the first seismogram is the only one
 	return (await query.querySeismograms())[0];
@@ -341,12 +361,56 @@ async function updateGraphData(helicorder) {
 	if (helicorder._dataBuffer.isGraphEmpty()) {
 		return;
 	}
-	let scaledSeismogram = getBufferScaledSeismogram(helicorder._dataBuffer, helicorder.yScale);
+	// let scaledSeismogram = getBufferScaledSeismogram(helicorder._dataBuffer, helicorder.yScale);
+	let scaledSeismogram = getBufferTransformedSeismogram(helicorder);
 	let displayData = seisplotjs.seismogram.SeismogramDisplayData.fromSeismogram(
 		scaledSeismogram
 	);
 	helicorder._graph.seisData = [displayData];
 	emitGraphEvent(helicorder, "render");
+}
+
+function getBufferTransformedSeismogram(helicorder) {
+	// Initialize new seismogram
+	let seismogram = helicorder._dataBuffer.getSeismogram();
+	
+	// For each segment, scale all data points and append it to the seismogram
+	let segArr = [];
+	for (let i = 0; i < seismogram.segments.length; i++) {
+		segArr.push(getTransformedSegment(helicorder, seismogram.segments[i]));
+		if (segArr[i] === undefined) {
+			return;
+		}
+	}
+
+	return new seisplotjs.seismogram.Seismogram(segArr);
+}
+
+function getTransformedSegment(helicorder, seismogramSegment) {
+	// Use Int32Array for performace (plus it's what seisplotjs uses for segments)
+	let yArr = new Int32Array(seismogramSegment.numPoints);
+	for (let i = 0; i < yArr.length; i++) {
+		yArr[i] = transformDataPoint(helicorder, seismogramSegment.y[i]);
+		if (yArr[i] === undefined) {
+			return;
+		}
+	}
+
+	// Segments in seisplotjs don't allow you to directly set the y array, so
+	//   we clone the old segment to get the new one instead
+	return seismogramSegment.cloneWithNewData(yArr);
+}
+
+function transformDataPoint(helicorder, value) {
+	let newValue = value;
+	for (let i = 0; i < helicorder._dataTransforms.length; i++) {
+		newValue = helicorder._dataTransforms[i](newValue, helicorder._dataBuffer.getStatistics());
+		if (typeof newValue !== "number") {
+			console.error("dataTransform got a value of " + newValue + "!");
+			return;
+		}
+	}
+	return newValue;
 }
 
 // Scales the given helicorder's current data to its scale, which triggers a redraw
@@ -404,6 +468,7 @@ function scaleDataPoint(value, scale, segmentMidpoint, dataRangeMin, dataRangeMa
 	return newVal;
 }
 
+// The current events are: init, initData, render, and append
 function emitGraphEvent(helicorder, eventId) {
 	for (const index in helicorder._callbacks[eventId]) {
 		helicorder._callbacks[eventId][index]();
